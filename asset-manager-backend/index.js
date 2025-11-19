@@ -147,6 +147,47 @@ db.run(`CREATE TABLE IF NOT EXISTS assets (
 
 db.run(`CREATE TABLE IF NOT EXISTS used_ids ( assetId TEXT PRIMARY KEY )`);
 
+// ---- Consumables tables ----
+db.run(`CREATE TABLE IF NOT EXISTS consumables (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  quantity INTEGER DEFAULT 0,
+  company TEXT,
+  customFields TEXT,
+  createdAt TEXT DEFAULT (datetime('now')),
+  updatedAt TEXT DEFAULT (datetime('now'))
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS consumable_custom_fields (
+  fieldName TEXT PRIMARY KEY,
+  fieldType TEXT NOT NULL,
+  required INTEGER DEFAULT 0,
+  sortOrder INTEGER DEFAULT 0
+)`);
+
+// Add sortOrder column if it doesn't exist (for existing databases)
+db.run(`ALTER TABLE consumable_custom_fields ADD COLUMN sortOrder INTEGER DEFAULT 0`, (err) => {
+  // Ignore error if column already exists
+  if (err && !String(err.message).includes('duplicate column')) {
+    console.error('Failed to add sortOrder column:', err.message);
+  }
+});
+
+db.run(`CREATE TABLE IF NOT EXISTS used_consumable_ids ( id TEXT PRIMARY KEY )`);
+
+db.run(`CREATE TABLE IF NOT EXISTS consumable_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  consumableId TEXT NOT NULL,
+  type TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  reason TEXT,
+  performedBy TEXT,
+  createdAt TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (consumableId) REFERENCES consumables(id) ON DELETE CASCADE
+)`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_consumable_transactions_consumableId ON consumable_transactions(consumableId)`);
+
 // Safe migration to add invoiceUrl column if missing (legacy, last uploaded)
 function ensureInvoiceColumn(cb) {
   db.all(`PRAGMA table_info(assets);`, [], (err, rows) => {
@@ -767,6 +808,239 @@ app.delete('/assets/:assetId/invoices/:invoiceId', (req, res) => {
           }
         );
       });
+    }
+  );
+});
+
+/* ----------------------------- Consumables API --------------------------- */
+// Get all consumables with custom fields merged
+app.get('/consumables', (req, res) => {
+  db.all('SELECT * FROM consumables ORDER BY id', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const parsed = rows.map(r => ({
+      ...r,
+      customFields: r.customFields ? JSON.parse(r.customFields) : {}
+    }));
+    res.json(parsed);
+  });
+});
+
+// Get next consumable ID
+app.get('/consumables/next-id', (req, res) => {
+  db.all(`SELECT id FROM used_consumable_ids WHERE id LIKE 'CONS-%'`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const numbers = rows
+      .map(row => {
+        const m = row.id.match(/^CONS-(\d+)$/);
+        return m ? parseInt(m[1], 10) : null;
+      })
+      .filter(n => n !== null);
+    const next = numbers.length ? Math.max(...numbers) + 1 : 1;
+    res.json({ id: `CONS-${String(next).padStart(3, '0')}` });
+  });
+});
+
+// Add new consumable
+app.post('/consumables', (req, res) => {
+  const { id, name, quantity, company, customFields } = req.body;
+
+  if (!id || !name) {
+    return res.status(400).json({ error: 'ID and name are required' });
+  }
+
+  const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
+  const sql = `INSERT INTO consumables (id, name, quantity, company, customFields) VALUES (?, ?, ?, ?, ?)`;
+
+  db.run(sql, [id, name, quantity || 0, company || null, customFieldsJson], function (err) {
+    if (err) {
+      const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
+      return res.status(status).json({ error: err.message });
+    }
+    db.run(`INSERT OR IGNORE INTO used_consumable_ids (id) VALUES (?)`, [id]);
+    res.status(201).json({ id, inserted: true });
+  });
+});
+
+// Update consumable
+app.put('/consumables/:id', (req, res) => {
+  const { id } = req.params;
+  const { name, quantity, company, customFields } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ error: 'Name is required' });
+  }
+
+  const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
+  const sql = `UPDATE consumables SET name = ?, quantity = ?, company = ?, customFields = ?, updatedAt = datetime('now') WHERE id = ?`;
+
+  db.run(sql, [name, quantity || 0, company || null, customFieldsJson, id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ updated: this.changes });
+  });
+});
+
+// Delete consumable
+app.delete('/consumables/:id', (req, res) => {
+  db.run(`DELETE FROM consumables WHERE id = ?`, req.params.id, function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ deleted: this.changes });
+  });
+});
+
+// Get custom fields
+app.get('/consumables/fields', (req, res) => {
+  db.all('SELECT * FROM consumable_custom_fields ORDER BY sortOrder, fieldName', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows.map(r => ({ ...r, required: Boolean(r.required) })));
+  });
+});
+
+// Add custom field
+app.post('/consumables/fields', (req, res) => {
+  const { fieldName, fieldType, required } = req.body;
+
+  if (!fieldName || !fieldType) {
+    return res.status(400).json({ error: 'fieldName and fieldType are required' });
+  }
+
+  // Get the max sortOrder and add 1 for the new field
+  db.get('SELECT MAX(sortOrder) as maxOrder FROM consumable_custom_fields', [], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    const nextOrder = (row?.maxOrder || 0) + 1;
+    const sql = `INSERT INTO consumable_custom_fields (fieldName, fieldType, required, sortOrder) VALUES (?, ?, ?, ?)`;
+
+    db.run(sql, [fieldName, fieldType, required ? 1 : 0, nextOrder], function (err) {
+      if (err) {
+        const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
+        return res.status(status).json({ error: err.message });
+      }
+      res.status(201).json({ fieldName, added: true });
+    });
+  });
+});
+
+// Delete custom field
+app.delete('/consumables/fields/:fieldName', (req, res) => {
+  db.run(`DELETE FROM consumable_custom_fields WHERE fieldName = ?`, req.params.fieldName, function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ deleted: this.changes });
+  });
+});
+
+// Reorder custom fields
+app.post('/consumables/fields/reorder', (req, res) => {
+  const { fieldNames } = req.body;
+
+  if (!Array.isArray(fieldNames)) {
+    return res.status(400).json({ error: 'fieldNames must be an array' });
+  }
+
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+
+    let completed = 0;
+    let hasError = false;
+
+    fieldNames.forEach((fieldName, index) => {
+      db.run(
+        'UPDATE consumable_custom_fields SET sortOrder = ? WHERE fieldName = ?',
+        [index, fieldName],
+        (err) => {
+          if (err && !hasError) {
+            hasError = true;
+            db.run('ROLLBACK');
+            return res.status(500).json({ error: err.message });
+          }
+
+          completed++;
+          if (completed === fieldNames.length && !hasError) {
+            db.run('COMMIT');
+            res.json({ success: true, updated: completed });
+          }
+        }
+      );
+    });
+  });
+});
+
+// Add transaction (add or subtract quantity)
+app.post('/consumables/:id/transaction', (req, res) => {
+  const { id } = req.params;
+  const { type, quantity, reason } = req.body;
+
+  if (!type || !['add', 'subtract'].includes(type)) {
+    return res.status(400).json({ error: 'Type must be "add" or "subtract"' });
+  }
+
+  if (!quantity || quantity <= 0) {
+    return res.status(400).json({ error: 'Quantity must be a positive number' });
+  }
+
+  const performedBy = req.session?.user?.email || 'system';
+
+  db.serialize(() => {
+    // Get current quantity
+    db.get('SELECT quantity FROM consumables WHERE id = ?', [id], (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!row) return res.status(404).json({ error: 'Consumable not found' });
+
+      const currentQty = row.quantity || 0;
+      const change = type === 'add' ? quantity : -quantity;
+      const newQty = currentQty + change;
+
+      if (newQty < 0) {
+        return res.status(400).json({ error: 'Insufficient quantity in stock' });
+      }
+
+      db.run('BEGIN TRANSACTION');
+
+      // Update consumable quantity
+      db.run(
+        'UPDATE consumables SET quantity = ?, updatedAt = datetime("now") WHERE id = ?',
+        [newQty, id],
+        function (err2) {
+          if (err2) {
+            db.run('ROLLBACK');
+            return res.status(500).json({ error: err2.message });
+          }
+
+          // Record transaction
+          db.run(
+            'INSERT INTO consumable_transactions (consumableId, type, quantity, reason, performedBy) VALUES (?, ?, ?, ?, ?)',
+            [id, type, quantity, reason || null, performedBy],
+            function (err3) {
+              if (err3) {
+                db.run('ROLLBACK');
+                return res.status(500).json({ error: err3.message });
+              }
+
+              db.run('COMMIT', (err4) => {
+                if (err4) return res.status(500).json({ error: err4.message });
+                res.json({
+                  success: true,
+                  previousQuantity: currentQty,
+                  newQuantity: newQty,
+                  transactionId: this.lastID
+                });
+              });
+            }
+          );
+        }
+      );
+    });
+  });
+});
+
+// Get transaction history for a consumable
+app.get('/consumables/:id/transactions', (req, res) => {
+  const { id } = req.params;
+  db.all(
+    'SELECT * FROM consumable_transactions WHERE consumableId = ? ORDER BY createdAt DESC',
+    [id],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows || []);
     }
   );
 });

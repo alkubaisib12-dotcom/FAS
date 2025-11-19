@@ -145,3 +145,80 @@ export async function uploadInvoice(assetId, file) {
     body: fd,
   });
 }
+
+/* ===== Consumables API ===== */
+// Get all consumables
+export async function getAllConsumables() {
+  return request('/consumables', { method: 'GET' });
+}
+
+// Get next consumable ID
+export async function getNextConsumableId() {
+  const { id } = await request('/consumables/next-id', { method: 'GET' });
+  return id;
+}
+
+// Add new consumable
+export async function addConsumable(consumable) {
+  return request('/consumables', {
+    method: 'POST',
+    body: JSON.stringify(consumable),
+  });
+}
+
+// Update consumable
+export async function updateConsumable(id, consumable) {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}`, {
+    method: 'PUT',
+    body: JSON.stringify(consumable),
+  });
+}
+
+// Delete consumable
+export async function deleteConsumable(id) {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}`, { method: 'DELETE' });
+}
+
+// Get custom fields
+export async function getConsumableFields() {
+  return request('/consumables/fields', { method: 'GET' });
+}
+
+// Add custom field
+export async function addConsumableField(field) {
+  return request('/consumables/fields', {
+    method: 'POST',
+    body: JSON.stringify(field),
+  });
+}
+
+// Delete custom field
+export async function deleteConsumableField(fieldName) {
+  const encoded = encodeURIComponent(fieldName);
+  return request(`/consumables/fields/${encoded}`, { method: 'DELETE' });
+}
+
+// Update fields order
+export async function updateFieldsOrder(fieldNames) {
+  return request('/consumables/fields/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ fieldNames }),
+  });
+}
+
+// Add transaction (add or subtract quantity)
+export async function addConsumableTransaction(id, type, quantity, reason = '') {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}/transaction`, {
+    method: 'POST',
+    body: JSON.stringify({ type, quantity, reason }),
+  });
+}
+
+// Get transaction history
+export async function getConsumableTransactions(id) {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}/transactions`, { method: 'GET' });
+}

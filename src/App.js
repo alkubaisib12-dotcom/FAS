@@ -4,6 +4,7 @@ import AssetTable from './components/AssetTable';
 import AssetForm from './components/AssetForm';
 import ScanModal from './components/ScanModal';
 import Dashboard from './components/Dashboard';
+import ConsumablesView from './components/ConsumablesView';
 import { authMe, login, logout } from './utils/api';
 import './styles/app.css'; // <- all visual styles live here
 
@@ -55,7 +56,7 @@ function App() {
 
   /* -------- App view state -------- */
   const [refresh, setRefresh] = useState(Date.now());
-  const [view, setView] = useState('table'); // 'table' | 'form' | 'dashboard'
+  const [view, setView] = useState('table'); // 'table' | 'form' | 'dashboard' | 'consumables'
   const [scanOpen, setScanOpen] = useState(false);
   const [editData, setEditData] = useState(null);
 
@@ -67,6 +68,7 @@ function App() {
   const goToTable = () => { setView('table'); setEditData(null); };
   const goToFormAdd = () => { setEditData(null); setView('form'); };
   const goToDashboard = () => setView('dashboard');
+  const goToConsumables = () => setView('consumables');
 
   const triggerRefresh = () => {
     setRefresh(Date.now());
@@ -172,6 +174,17 @@ function App() {
             <div className="toolbar-right">
               <button className="btn" onClick={() => setScanOpen(true)}>Scan Network</button>
               <button className="btn" onClick={goToDashboard}>Dashboard</button>
+              <button
+                className="btn"
+                onClick={goToConsumables}
+                style={{
+                  background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)',
+                  color: '#fff',
+                  fontWeight: '600'
+                }}
+              >
+                Consumables
+              </button>
               <button className="btn btn-accent" onClick={goToFormAdd}>Add New Asset</button>
             </div>
           </div>
@@ -219,6 +232,19 @@ function App() {
           </div>
 
           <Dashboard />
+        </>
+      )}
+
+      {view === 'consumables' && (
+        <>
+          <div className="toolbar">
+            <div className="toolbar-left">
+              <button className="btn" onClick={goToTable}>← Back to List</button>
+            </div>
+            <div className="toolbar-right" />
+          </div>
+
+          <ConsumablesView />
         </>
       )}
     </div>
