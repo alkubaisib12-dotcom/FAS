@@ -1,0 +1,25 @@
+node:events:496
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: connect ETIMEDOUT 10.27.16.5:389
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+Emitted 'error' event on Client instance at:
+    at Backoff.<anonymous> (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\ldapjs\lib\client\client.js:1077:12)
+    at Backoff.emit (node:events:518:28)
+    at Backoff.backoff (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\backoff\lib\backoff.js:41:14)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\ldapjs\lib\client\client.js:1061:15
+    at f (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\once\once.js:25:25)
+    at Socket.onResult (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\ldapjs\lib\client\client.js:814:7)
+    at Object.onceWrapper (node:events:633:26)
+    at Socket.emit (node:events:518:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3) {
+  errno: -4039,
+  code: 'ETIMEDOUT',
+  syscall: 'connect',
+  address: '10.27.16.5',
+  port: 389
+}
+
+Node.js v22.18.0

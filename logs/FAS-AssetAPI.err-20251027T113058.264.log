@@ -1,0 +1,11 @@
+<anonymous_script>:0
+
+
+[Error: SQLITE_ERROR: 33 values for 34 columns
+Emitted 'error' event on Statement instance at:
+] {
+  errno: 1,
+  code: 'SQLITE_ERROR'
+}
+
+Node.js v22.21.0

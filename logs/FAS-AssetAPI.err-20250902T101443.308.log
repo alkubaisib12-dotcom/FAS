@@ -1,0 +1,134 @@
+Error: CORS blocked: ${jndi:dns://10.27.17.22:34255/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+Error: CORS blocked: ${jndi:ldaps://10.27.17.22:46576/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+Error: CORS blocked: ${jndi:ldap://10.27.17.22:45412/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+BadRequestError: request aborted
+    at IncomingMessage.onAborted (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\raw-body\index.js:245:10)
+    at IncomingMessage.emit (node:events:518:28)
+    at IncomingMessage._destroy (node:_http_incoming:221:10)
+    at _destroy (node:internal/streams/destroy:122:10)
+    at IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    at abortIncoming (node:_http_server:811:9)
+    at socketOnClose (node:_http_server:805:3)
+    at Socket.emit (node:events:530:35)
+    at TCP.<anonymous> (node:net:346:12)
+Error: CORS blocked: ${jndi:http://10.27.17.22:43005/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+Error: CORS blocked: ${jndi:corba://10.27.17.22:42739/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+Error: CORS blocked: ${jndi:nis://10.27.17.22:34255/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+Error: CORS blocked: ${jndi:rmi://10.27.17.22:46576/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+Error: CORS blocked: ${jndi:nds://10.27.17.22:42739/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+Error: CORS blocked: ${jndi:iiop://10.27.17.22:34255/QUALYSTEST}
+    at origin (E:\Apps\FAS_b901236\asset-manager-backend\index.js:68:15)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:219:13
+    at optionsCallback (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:199:9)
+    at corsMiddleware (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\cors\lib\index.js:204:7)
+    at Layer.handleRequest (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\lib\layer.js:152:17)
+    at trimPrefix (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:342:13)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:297:9
+    at processParams (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:582:12)
+    at next (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:291:5)
+    at Function.handle (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\router\index.js:186:3)
+node:events:496
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: connect ETIMEDOUT 10.27.16.5:389
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)
+Emitted 'error' event on Client instance at:
+    at Backoff.<anonymous> (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\ldapjs\lib\client\client.js:1077:12)
+    at Backoff.emit (node:events:518:28)
+    at Backoff.backoff (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\backoff\lib\backoff.js:41:14)
+    at E:\Apps\FAS_b901236\asset-manager-backend\node_modules\ldapjs\lib\client\client.js:1061:15
+    at f (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\once\once.js:25:25)
+    at Socket.onResult (E:\Apps\FAS_b901236\asset-manager-backend\node_modules\ldapjs\lib\client\client.js:814:7)
+    at Object.onceWrapper (node:events:633:26)
+    at Socket.emit (node:events:518:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3) {
+  errno: -4039,
+  code: 'ETIMEDOUT',
+  syscall: 'connect',
+  address: '10.27.16.5',
+  port: 389
+}
+
+Node.js v22.18.0
