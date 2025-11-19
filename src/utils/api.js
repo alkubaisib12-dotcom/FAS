@@ -199,3 +199,18 @@ export async function deleteConsumableField(fieldName) {
   const encoded = encodeURIComponent(fieldName);
   return request(`/consumables/fields/${encoded}`, { method: 'DELETE' });
 }
+
+// Add transaction (add or subtract quantity)
+export async function addConsumableTransaction(id, type, quantity, reason = '') {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}/transaction`, {
+    method: 'POST',
+    body: JSON.stringify({ type, quantity, reason }),
+  });
+}
+
+// Get transaction history
+export async function getConsumableTransactions(id) {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}/transactions`, { method: 'GET' });
+}

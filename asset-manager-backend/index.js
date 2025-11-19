@@ -166,6 +166,19 @@ db.run(`CREATE TABLE IF NOT EXISTS consumable_custom_fields (
 
 db.run(`CREATE TABLE IF NOT EXISTS used_consumable_ids ( id TEXT PRIMARY KEY )`);
 
+db.run(`CREATE TABLE IF NOT EXISTS consumable_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  consumableId TEXT NOT NULL,
+  type TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  reason TEXT,
+  performedBy TEXT,
+  createdAt TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (consumableId) REFERENCES consumables(id) ON DELETE CASCADE
+)`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_consumable_transactions_consumableId ON consumable_transactions(consumableId)`);
+
 // Safe migration to add invoiceUrl column if missing (legacy, last uploaded)
 function ensureInvoiceColumn(cb) {
   db.all(`PRAGMA table_info(assets);`, [], (err, rows) => {
@@ -898,6 +911,87 @@ app.delete('/consumables/fields/:fieldName', (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ deleted: this.changes });
   });
+});
+
+// Add transaction (add or subtract quantity)
+app.post('/consumables/:id/transaction', (req, res) => {
+  const { id } = req.params;
+  const { type, quantity, reason } = req.body;
+
+  if (!type || !['add', 'subtract'].includes(type)) {
+    return res.status(400).json({ error: 'Type must be "add" or "subtract"' });
+  }
+
+  if (!quantity || quantity <= 0) {
+    return res.status(400).json({ error: 'Quantity must be a positive number' });
+  }
+
+  const performedBy = req.session?.user?.email || 'system';
+
+  db.serialize(() => {
+    // Get current quantity
+    db.get('SELECT quantity FROM consumables WHERE id = ?', [id], (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!row) return res.status(404).json({ error: 'Consumable not found' });
+
+      const currentQty = row.quantity || 0;
+      const change = type === 'add' ? quantity : -quantity;
+      const newQty = currentQty + change;
+
+      if (newQty < 0) {
+        return res.status(400).json({ error: 'Insufficient quantity in stock' });
+      }
+
+      db.run('BEGIN TRANSACTION');
+
+      // Update consumable quantity
+      db.run(
+        'UPDATE consumables SET quantity = ?, updatedAt = datetime("now") WHERE id = ?',
+        [newQty, id],
+        function (err2) {
+          if (err2) {
+            db.run('ROLLBACK');
+            return res.status(500).json({ error: err2.message });
+          }
+
+          // Record transaction
+          db.run(
+            'INSERT INTO consumable_transactions (consumableId, type, quantity, reason, performedBy) VALUES (?, ?, ?, ?, ?)',
+            [id, type, quantity, reason || null, performedBy],
+            function (err3) {
+              if (err3) {
+                db.run('ROLLBACK');
+                return res.status(500).json({ error: err3.message });
+              }
+
+              db.run('COMMIT', (err4) => {
+                if (err4) return res.status(500).json({ error: err4.message });
+                res.json({
+                  success: true,
+                  previousQuantity: currentQty,
+                  newQuantity: newQty,
+                  transactionId: this.lastID
+                });
+              });
+            }
+          );
+        }
+      );
+    });
+  });
+});
+
+// Get transaction history for a consumable
+app.get('/consumables/:id/transactions', (req, res) => {
+  const { id } = req.params;
+  db.all(
+    'SELECT * FROM consumable_transactions WHERE consumableId = ? ORDER BY createdAt DESC',
+    [id],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows || []);
+    }
+  );
 });
 
 /* --------------------------------- Scan ---------------------------------- */

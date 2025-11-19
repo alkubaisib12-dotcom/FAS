@@ -158,12 +158,6 @@ export default function CustomFieldManager({ fields, onUpdate, onClose }) {
           </div>
         )}
       </div>
-
-      <div style={{ marginTop: 20, textAlign: 'right' }}>
-        <button onClick={onClose} style={btnStyle('secondary')}>
-          Close
-        </button>
-      </div>
     </div>
   );
 }

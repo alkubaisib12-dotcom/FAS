@@ -11,6 +11,7 @@ import {
 import { exportConsumablesToExcel } from '../utils/exportUtils';
 import Modal from './Modal';
 import CustomFieldManager from './CustomFieldManager';
+import TransactionModal from './TransactionModal';
 
 export default function ConsumablesView() {
   const [consumables, setConsumables] = useState([]);
@@ -19,6 +20,8 @@ export default function ConsumablesView() {
   const [editingItem, setEditingItem] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showFieldManager, setShowFieldManager] = useState(false);
+  const [showTransactionModal, setShowTransactionModal] = useState(false);
+  const [selectedItem, setSelectedItem] = useState(null);
   const [searchText, setSearchText] = useState('');
 
   // Form state
@@ -145,6 +148,15 @@ export default function ConsumablesView() {
     exportConsumablesToExcel(filteredItems, customFields, 'consumables_export.xlsx');
   };
 
+  const handleOpenTransaction = (item) => {
+    setSelectedItem(item);
+    setShowTransactionModal(true);
+  };
+
+  const handleTransactionSuccess = () => {
+    loadData(); // Reload to get updated quantities
+  };
+
   if (loading) return <div style={{ padding: 20 }}>Loading...</div>;
 
   return (
@@ -199,7 +211,18 @@ export default function ConsumablesView() {
                 >
                   <td style={tdStyle}>{item.id}</td>
                   <td style={tdStyle}>{item.name}</td>
-                  <td style={tdStyle}>{item.quantity}</td>
+                  <td style={tdStyle}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontWeight: 'bold', fontSize: 16 }}>{item.quantity}</span>
+                      <button
+                        onClick={() => handleOpenTransaction(item)}
+                        style={stockBtnStyle}
+                        title="Add/Subtract Stock"
+                      >
+                        ± Stock
+                      </button>
+                    </div>
+                  </td>
                   <td style={tdStyle}>{item.company || '-'}</td>
                   {customFields.map(field => (
                     <td key={field.fieldName} style={tdStyle}>
@@ -308,6 +331,18 @@ export default function ConsumablesView() {
           onClose={() => setShowFieldManager(false)}
         />
       </Modal>
+
+      {/* Transaction Modal */}
+      {showTransactionModal && selectedItem && (
+        <TransactionModal
+          item={selectedItem}
+          onClose={() => {
+            setShowTransactionModal(false);
+            setSelectedItem(null);
+          }}
+          onSuccess={handleTransactionSuccess}
+        />
+      )}
     </div>
   );
 }
@@ -346,6 +381,17 @@ const actionBtnStyle = (type) => ({
   background: type === 'edit' ? '#007bff' : '#dc3545',
   color: '#fff'
 });
+
+const stockBtnStyle = {
+  padding: '4px 8px',
+  fontSize: 12,
+  fontWeight: 600,
+  border: '1px solid #f59e0b',
+  borderRadius: 4,
+  cursor: 'pointer',
+  background: '#fff',
+  color: '#f59e0b'
+};
 
 const fieldRow = {
   display: 'flex',
