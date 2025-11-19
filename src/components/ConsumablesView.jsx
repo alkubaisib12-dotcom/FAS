@@ -161,7 +161,38 @@ export default function ConsumablesView() {
 
   return (
     <div style={{ padding: 20 }}>
-      <h2 style={{ marginBottom: 20 }}>Consumables Store</h2>
+      {/* Consumables Header Banner */}
+      <div style={{
+        background: 'linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%)',
+        padding: '20px 24px',
+        borderRadius: 10,
+        marginBottom: 24,
+        boxShadow: '0 4px 12px rgba(139, 92, 246, 0.2)'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            background: 'rgba(255, 255, 255, 0.25)',
+            width: 48,
+            height: 48,
+            borderRadius: 10,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 24,
+            color: '#fff'
+          }}>
+            📦
+          </div>
+          <div>
+            <h2 style={{ margin: 0, color: '#fff', fontSize: 28, fontWeight: 700 }}>
+              Consumables Store
+            </h2>
+            <p style={{ margin: '4px 0 0 0', color: 'rgba(255, 255, 255, 0.9)', fontSize: 14 }}>
+              Manage inventory items, track stock, and monitor usage
+            </p>
+          </div>
+        </div>
+      </div>
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, alignItems: 'center' }}>
@@ -188,8 +219,8 @@ export default function ConsumablesView() {
         <p style={{ fontStyle: 'italic', color: '#999' }}>No items found.</p>
       ) : (
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff' }}>
-            <thead style={{ background: '#e9ecef' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+            <thead style={{ background: 'linear-gradient(135deg, #a78bfa 0%, #22d3ee 100%)' }}>
               <tr>
                 <th style={thStyle}>ID</th>
                 <th style={thStyle}>Name</th>
@@ -349,11 +380,12 @@ export default function ConsumablesView() {
 
 // Styles
 const thStyle = {
-  padding: 10,
+  padding: 12,
   textAlign: 'left',
   fontWeight: 'bold',
   fontSize: 14,
-  borderBottom: '2px solid #ccc'
+  color: '#fff',
+  borderBottom: '2px solid rgba(255, 255, 255, 0.3)'
 };
 
 const tdStyle = {
@@ -367,8 +399,9 @@ const btnStyle = (variant) => ({
   border: 'none',
   borderRadius: 5,
   cursor: 'pointer',
-  background: variant === 'primary' ? '#28a745' : variant === 'export' ? '#17a2b8' : '#6c757d',
-  color: '#fff'
+  background: variant === 'primary' ? '#8b5cf6' : variant === 'export' ? '#06b6d4' : '#6c757d',
+  color: '#fff',
+  fontWeight: '600'
 });
 
 const actionBtnStyle = (type) => ({
@@ -378,7 +411,7 @@ const actionBtnStyle = (type) => ({
   border: 'none',
   borderRadius: 4,
   cursor: 'pointer',
-  background: type === 'edit' ? '#007bff' : '#dc3545',
+  background: type === 'edit' ? '#8b5cf6' : '#dc3545',
   color: '#fff'
 });
 
@@ -386,11 +419,11 @@ const stockBtnStyle = {
   padding: '4px 8px',
   fontSize: 12,
   fontWeight: 600,
-  border: '1px solid #f59e0b',
+  border: '1px solid #06b6d4',
   borderRadius: 4,
   cursor: 'pointer',
   background: '#fff',
-  color: '#f59e0b'
+  color: '#06b6d4'
 };
 
 const fieldRow = {

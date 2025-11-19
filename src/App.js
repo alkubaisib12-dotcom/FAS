@@ -174,7 +174,17 @@ function App() {
             <div className="toolbar-right">
               <button className="btn" onClick={() => setScanOpen(true)}>Scan Network</button>
               <button className="btn" onClick={goToDashboard}>Dashboard</button>
-              <button className="btn" onClick={goToConsumables}>Consumables</button>
+              <button
+                className="btn"
+                onClick={goToConsumables}
+                style={{
+                  background: 'linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%)',
+                  color: '#fff',
+                  fontWeight: '600'
+                }}
+              >
+                Consumables
+              </button>
               <button className="btn btn-accent" onClick={goToFormAdd}>Add New Asset</button>
             </div>
           </div>
