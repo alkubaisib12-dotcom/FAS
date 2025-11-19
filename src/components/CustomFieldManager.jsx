@@ -1,6 +1,6 @@
 // src/components/CustomFieldManager.jsx
 import React, { useState } from 'react';
-import { addConsumableField, deleteConsumableField } from '../utils/api';
+import { addConsumableField, deleteConsumableField, updateFieldsOrder } from '../utils/api';
 
 export default function CustomFieldManager({ fields, onUpdate, onClose }) {
   const [newField, setNewField] = useState({
@@ -8,6 +8,13 @@ export default function CustomFieldManager({ fields, onUpdate, onClose }) {
     fieldType: 'text',
     required: false
   });
+  const [draggedIndex, setDraggedIndex] = useState(null);
+  const [localFields, setLocalFields] = useState(fields);
+
+  // Update local fields when props change
+  React.useEffect(() => {
+    setLocalFields(fields);
+  }, [fields]);
 
   const handleAddField = async (e) => {
     e.preventDefault();
@@ -47,8 +54,76 @@ export default function CustomFieldManager({ fields, onUpdate, onClose }) {
     }
   };
 
+  // Drag and drop handlers
+  const handleDragStart = (e, index) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, index) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+
+    if (draggedIndex === null || draggedIndex === index) return;
+
+    // Reorder the fields
+    const newFields = [...localFields];
+    const draggedField = newFields[draggedIndex];
+    newFields.splice(draggedIndex, 1);
+    newFields.splice(index, 0, draggedField);
+
+    setLocalFields(newFields);
+    setDraggedIndex(index);
+  };
+
+  const handleDragEnd = async () => {
+    if (draggedIndex !== null) {
+      // Save the new order to backend
+      try {
+        const fieldNames = localFields.map(f => f.fieldName);
+        await updateFieldsOrder(fieldNames);
+        onUpdate(); // Refresh to get updated order from server
+      } catch (err) {
+        console.error('Failed to update field order:', err);
+        alert('Failed to save field order: ' + err.message);
+      }
+    }
+    setDraggedIndex(null);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+  };
+
   return (
-    <div style={{ maxWidth: 700, margin: '0 auto' }}>
+    <div style={{ maxWidth: 700, margin: '0 auto', position: 'relative' }}>
+      {/* X Close Button */}
+      <button
+        onClick={onClose}
+        style={{
+          position: 'absolute',
+          top: -10,
+          right: -10,
+          background: '#ef4444',
+          color: '#fff',
+          border: 'none',
+          borderRadius: '50%',
+          width: 32,
+          height: 32,
+          fontSize: 18,
+          fontWeight: 'bold',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          lineHeight: 1
+        }}
+        title="Close"
+      >
+        ×
+      </button>
+
       <h3 style={{ marginTop: 0 }}>Manage Custom Fields</h3>
       <p style={{ color: '#6b7280', marginBottom: 20 }}>
         Add custom columns to track additional information for your consumables.
@@ -105,8 +180,15 @@ export default function CustomFieldManager({ fields, onUpdate, onClose }) {
 
       {/* Existing Fields List */}
       <div>
-        <h4 style={{ marginBottom: 10 }}>Current Custom Fields ({fields.length})</h4>
-        {fields.length === 0 ? (
+        <h4 style={{ marginBottom: 10 }}>
+          Current Custom Fields ({localFields.length})
+          {localFields.length > 0 && (
+            <span style={{ fontSize: 13, fontWeight: 400, color: '#6b7280', marginLeft: 8 }}>
+              (Drag to reorder)
+            </span>
+          )}
+        </h4>
+        {localFields.length === 0 ? (
           <p style={{ color: '#9ca3af', fontStyle: 'italic' }}>
             No custom fields yet. Add your first field above.
           </p>
@@ -115,6 +197,7 @@ export default function CustomFieldManager({ fields, onUpdate, onClose }) {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead style={{ background: '#f3f4f6' }}>
                 <tr>
+                  <th style={{ ...thStyle, width: 40 }}></th>
                   <th style={thStyle}>Field Name</th>
                   <th style={thStyle}>Type</th>
                   <th style={thStyle}>Required</th>
@@ -122,8 +205,24 @@ export default function CustomFieldManager({ fields, onUpdate, onClose }) {
                 </tr>
               </thead>
               <tbody>
-                {fields.map((field) => (
-                  <tr key={field.fieldName} style={{ borderTop: '1px solid #e5e7eb' }}>
+                {localFields.map((field, index) => (
+                  <tr
+                    key={field.fieldName}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, index)}
+                    onDragOver={(e) => handleDragOver(e, index)}
+                    onDragEnd={handleDragEnd}
+                    onDrop={handleDrop}
+                    style={{
+                      borderTop: '1px solid #e5e7eb',
+                      cursor: 'move',
+                      background: draggedIndex === index ? '#f3f4f6' : '#fff',
+                      opacity: draggedIndex === index ? 0.5 : 1
+                    }}
+                  >
+                    <td style={{ ...tdStyle, textAlign: 'center', color: '#9ca3af', fontSize: 18 }}>
+                      ⋮⋮
+                    </td>
                     <td style={tdStyle}>{field.fieldName}</td>
                     <td style={tdStyle}>
                       <span style={{

@@ -161,8 +161,17 @@ db.run(`CREATE TABLE IF NOT EXISTS consumables (
 db.run(`CREATE TABLE IF NOT EXISTS consumable_custom_fields (
   fieldName TEXT PRIMARY KEY,
   fieldType TEXT NOT NULL,
-  required INTEGER DEFAULT 0
+  required INTEGER DEFAULT 0,
+  sortOrder INTEGER DEFAULT 0
 )`);
+
+// Add sortOrder column if it doesn't exist (for existing databases)
+db.run(`ALTER TABLE consumable_custom_fields ADD COLUMN sortOrder INTEGER DEFAULT 0`, (err) => {
+  // Ignore error if column already exists
+  if (err && !String(err.message).includes('duplicate column')) {
+    console.error('Failed to add sortOrder column:', err.message);
+  }
+});
 
 db.run(`CREATE TABLE IF NOT EXISTS used_consumable_ids ( id TEXT PRIMARY KEY )`);
 
@@ -880,7 +889,7 @@ app.delete('/consumables/:id', (req, res) => {
 
 // Get custom fields
 app.get('/consumables/fields', (req, res) => {
-  db.all('SELECT * FROM consumable_custom_fields ORDER BY fieldName', [], (err, rows) => {
+  db.all('SELECT * FROM consumable_custom_fields ORDER BY sortOrder, fieldName', [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows.map(r => ({ ...r, required: Boolean(r.required) })));
   });
@@ -894,14 +903,20 @@ app.post('/consumables/fields', (req, res) => {
     return res.status(400).json({ error: 'fieldName and fieldType are required' });
   }
 
-  const sql = `INSERT INTO consumable_custom_fields (fieldName, fieldType, required) VALUES (?, ?, ?)`;
+  // Get the max sortOrder and add 1 for the new field
+  db.get('SELECT MAX(sortOrder) as maxOrder FROM consumable_custom_fields', [], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
 
-  db.run(sql, [fieldName, fieldType, required ? 1 : 0], function (err) {
-    if (err) {
-      const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
-      return res.status(status).json({ error: err.message });
-    }
-    res.status(201).json({ fieldName, added: true });
+    const nextOrder = (row?.maxOrder || 0) + 1;
+    const sql = `INSERT INTO consumable_custom_fields (fieldName, fieldType, required, sortOrder) VALUES (?, ?, ?, ?)`;
+
+    db.run(sql, [fieldName, fieldType, required ? 1 : 0, nextOrder], function (err) {
+      if (err) {
+        const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
+        return res.status(status).json({ error: err.message });
+      }
+      res.status(201).json({ fieldName, added: true });
+    });
   });
 });
 
@@ -910,6 +925,42 @@ app.delete('/consumables/fields/:fieldName', (req, res) => {
   db.run(`DELETE FROM consumable_custom_fields WHERE fieldName = ?`, req.params.fieldName, function (err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ deleted: this.changes });
+  });
+});
+
+// Reorder custom fields
+app.post('/consumables/fields/reorder', (req, res) => {
+  const { fieldNames } = req.body;
+
+  if (!Array.isArray(fieldNames)) {
+    return res.status(400).json({ error: 'fieldNames must be an array' });
+  }
+
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+
+    let completed = 0;
+    let hasError = false;
+
+    fieldNames.forEach((fieldName, index) => {
+      db.run(
+        'UPDATE consumable_custom_fields SET sortOrder = ? WHERE fieldName = ?',
+        [index, fieldName],
+        (err) => {
+          if (err && !hasError) {
+            hasError = true;
+            db.run('ROLLBACK');
+            return res.status(500).json({ error: err.message });
+          }
+
+          completed++;
+          if (completed === fieldNames.length && !hasError) {
+            db.run('COMMIT');
+            res.json({ success: true, updated: completed });
+          }
+        }
+      );
+    });
   });
 });
 

@@ -200,6 +200,14 @@ export async function deleteConsumableField(fieldName) {
   return request(`/consumables/fields/${encoded}`, { method: 'DELETE' });
 }
 
+// Update fields order
+export async function updateFieldsOrder(fieldNames) {
+  return request('/consumables/fields/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ fieldNames }),
+  });
+}
+
 // Add transaction (add or subtract quantity)
 export async function addConsumableTransaction(id, type, quantity, reason = '') {
   const encoded = encodeURIComponent(id);
