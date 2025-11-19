@@ -147,6 +147,25 @@ db.run(`CREATE TABLE IF NOT EXISTS assets (
 
 db.run(`CREATE TABLE IF NOT EXISTS used_ids ( assetId TEXT PRIMARY KEY )`);
 
+// ---- Consumables tables ----
+db.run(`CREATE TABLE IF NOT EXISTS consumables (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  quantity INTEGER DEFAULT 0,
+  company TEXT,
+  customFields TEXT,
+  createdAt TEXT DEFAULT (datetime('now')),
+  updatedAt TEXT DEFAULT (datetime('now'))
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS consumable_custom_fields (
+  fieldName TEXT PRIMARY KEY,
+  fieldType TEXT NOT NULL,
+  required INTEGER DEFAULT 0
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS used_consumable_ids ( id TEXT PRIMARY KEY )`);
+
 // Safe migration to add invoiceUrl column if missing (legacy, last uploaded)
 function ensureInvoiceColumn(cb) {
   db.all(`PRAGMA table_info(assets);`, [], (err, rows) => {
@@ -769,6 +788,116 @@ app.delete('/assets/:assetId/invoices/:invoiceId', (req, res) => {
       });
     }
   );
+});
+
+/* ----------------------------- Consumables API --------------------------- */
+// Get all consumables with custom fields merged
+app.get('/consumables', (req, res) => {
+  db.all('SELECT * FROM consumables ORDER BY id', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const parsed = rows.map(r => ({
+      ...r,
+      customFields: r.customFields ? JSON.parse(r.customFields) : {}
+    }));
+    res.json(parsed);
+  });
+});
+
+// Get next consumable ID
+app.get('/consumables/next-id', (req, res) => {
+  db.all(`SELECT id FROM used_consumable_ids WHERE id LIKE 'CONS-%'`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const numbers = rows
+      .map(row => {
+        const m = row.id.match(/^CONS-(\d+)$/);
+        return m ? parseInt(m[1], 10) : null;
+      })
+      .filter(n => n !== null);
+    const next = numbers.length ? Math.max(...numbers) + 1 : 1;
+    res.json({ id: `CONS-${String(next).padStart(3, '0')}` });
+  });
+});
+
+// Add new consumable
+app.post('/consumables', (req, res) => {
+  const { id, name, quantity, company, customFields } = req.body;
+
+  if (!id || !name) {
+    return res.status(400).json({ error: 'ID and name are required' });
+  }
+
+  const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
+  const sql = `INSERT INTO consumables (id, name, quantity, company, customFields) VALUES (?, ?, ?, ?, ?)`;
+
+  db.run(sql, [id, name, quantity || 0, company || null, customFieldsJson], function (err) {
+    if (err) {
+      const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
+      return res.status(status).json({ error: err.message });
+    }
+    db.run(`INSERT OR IGNORE INTO used_consumable_ids (id) VALUES (?)`, [id]);
+    res.status(201).json({ id, inserted: true });
+  });
+});
+
+// Update consumable
+app.put('/consumables/:id', (req, res) => {
+  const { id } = req.params;
+  const { name, quantity, company, customFields } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ error: 'Name is required' });
+  }
+
+  const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
+  const sql = `UPDATE consumables SET name = ?, quantity = ?, company = ?, customFields = ?, updatedAt = datetime('now') WHERE id = ?`;
+
+  db.run(sql, [name, quantity || 0, company || null, customFieldsJson, id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ updated: this.changes });
+  });
+});
+
+// Delete consumable
+app.delete('/consumables/:id', (req, res) => {
+  db.run(`DELETE FROM consumables WHERE id = ?`, req.params.id, function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ deleted: this.changes });
+  });
+});
+
+// Get custom fields
+app.get('/consumables/fields', (req, res) => {
+  db.all('SELECT * FROM consumable_custom_fields ORDER BY fieldName', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows.map(r => ({ ...r, required: Boolean(r.required) })));
+  });
+});
+
+// Add custom field
+app.post('/consumables/fields', (req, res) => {
+  const { fieldName, fieldType, required } = req.body;
+
+  if (!fieldName || !fieldType) {
+    return res.status(400).json({ error: 'fieldName and fieldType are required' });
+  }
+
+  const sql = `INSERT INTO consumable_custom_fields (fieldName, fieldType, required) VALUES (?, ?, ?)`;
+
+  db.run(sql, [fieldName, fieldType, required ? 1 : 0], function (err) {
+    if (err) {
+      const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
+      return res.status(status).json({ error: err.message });
+    }
+    res.status(201).json({ fieldName, added: true });
+  });
+});
+
+// Delete custom field
+app.delete('/consumables/fields/:fieldName', (req, res) => {
+  db.run(`DELETE FROM consumable_custom_fields WHERE fieldName = ?`, req.params.fieldName, function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ deleted: this.changes });
+  });
 });
 
 /* --------------------------------- Scan ---------------------------------- */
