@@ -188,7 +188,9 @@ const container = {
   border: '1px solid #ddd',
   maxWidth: '600px',
   margin: '0 auto 30px auto',
-  boxShadow: '0 0 12px rgba(0,0,0,0.06)'
+  boxShadow: '0 0 12px rgba(0,0,0,0.06)',
+  boxSizing: 'border-box',
+  overflowX: 'hidden'
 };
 const field = { marginBottom: '16px' };
 const label = { display: 'block', marginBottom: '6px', fontWeight: 'bold', color: '#444' };
@@ -197,7 +199,9 @@ const input = {
   padding: '10px',
   border: '1px solid #ccc',
   borderRadius: '6px',
-  fontSize: '14px'
+  fontSize: '14px',
+  maxWidth: '100%',
+  boxSizing: 'border-box'
 };
 const select = {
   width: '100%',
@@ -205,7 +209,9 @@ const select = {
   border: '1px solid #ccc',
   borderRadius: '6px',
   fontSize: '14px',
-  background: '#fff'
+  background: '#fff',
+  maxWidth: '100%',
+  boxSizing: 'border-box'
 };
 const button = {
   backgroundColor: '#007bff',

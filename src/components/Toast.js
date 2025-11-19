@@ -37,11 +37,12 @@ export default function Toast({ message, type = 'success', onClose }) {
           border: 'none',
           color: '#fff',
           fontSize: '16px',
-          cursor: 'pointer'
+          cursor: 'pointer',
+          fontWeight: 'bold'
         }}
         aria-label="Close"
       >
-        ❌
+        ×
       </button>
     </div>
   );

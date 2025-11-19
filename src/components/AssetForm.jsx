@@ -654,7 +654,9 @@ const formContainer = {
   background: '#fff',
   padding: '25px',
   borderRadius: '10px',
-  boxShadow: '0 0 10px rgba(0,0,0,0.08)'
+  boxShadow: '0 0 10px rgba(0,0,0,0.08)',
+  boxSizing: 'border-box',
+  overflowX: 'hidden'
 };
 
 const formHeader = {
@@ -668,7 +670,9 @@ const fieldsetStyle = {
   marginBottom: '25px',
   padding: '15px',
   border: '1px solid #ccc',
-  borderRadius: '6px'
+  borderRadius: '6px',
+  boxSizing: 'border-box',
+  overflowX: 'hidden'
 };
 
 const legendStyle = {
@@ -692,7 +696,10 @@ const inputStyle = {
   padding: '8px',
   fontSize: '14px',
   borderRadius: '4px',
-  border: '1px solid #ccc'
+  border: '1px solid #ccc',
+  width: '100%',
+  maxWidth: '100%',
+  boxSizing: 'border-box'
 };
 
 const submitButtonStyle = {
