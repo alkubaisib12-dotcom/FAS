@@ -161,37 +161,16 @@ export default function ConsumablesView() {
 
   return (
     <div style={{ padding: 20 }}>
-      {/* Consumables Header Banner */}
+      {/* Consumables Header */}
       <div style={{
         background: 'linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%)',
-        padding: '20px 24px',
-        borderRadius: 10,
-        marginBottom: 24,
-        boxShadow: '0 4px 12px rgba(139, 92, 246, 0.2)'
+        padding: '16px 24px',
+        borderRadius: 6,
+        marginBottom: 20
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{
-            background: 'rgba(255, 255, 255, 0.25)',
-            width: 48,
-            height: 48,
-            borderRadius: 10,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: 24,
-            color: '#fff'
-          }}>
-            📦
-          </div>
-          <div>
-            <h2 style={{ margin: 0, color: '#fff', fontSize: 28, fontWeight: 700 }}>
-              Consumables Store
-            </h2>
-            <p style={{ margin: '4px 0 0 0', color: 'rgba(255, 255, 255, 0.9)', fontSize: 14 }}>
-              Manage inventory items, track stock, and monitor usage
-            </p>
-          </div>
-        </div>
+        <h2 style={{ margin: 0, color: '#fff', fontSize: 24, fontWeight: 600 }}>
+          Consumables Store
+        </h2>
       </div>
 
       {/* Toolbar */}
