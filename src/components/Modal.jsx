@@ -7,9 +7,6 @@ export default function Modal({ isOpen, onClose, children }) {
     <div style={backdropStyle}>
       <div style={modalStyle}>
         {children}
-        <div style={{ textAlign: 'right', marginTop: '10px' }}>
-          <button onClick={onClose} style={closeBtnStyle}>Close</button>
-        </div>
       </div>
     </div>
   );
@@ -33,15 +30,9 @@ const modalStyle = {
   padding: '20px',
   borderRadius: '8px',
   width: '90%',
-  maxWidth: '600px',
+  maxWidth: '900px',
+  maxHeight: '90vh',
+  overflowY: 'auto',
   boxShadow: '0 5px 15px rgba(0,0,0,0.3)'
 };
 
-const closeBtnStyle = {
-  background: '#6c757d',
-  color: '#fff',
-  padding: '6px 12px',
-  border: 'none',
-  borderRadius: '5px',
-  cursor: 'pointer'
-};

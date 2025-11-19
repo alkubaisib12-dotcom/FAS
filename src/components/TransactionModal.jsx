@@ -66,7 +66,7 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
 
   return (
     <Modal isOpen={true} onClose={onClose}>
-      <div style={{ minWidth: 600, maxWidth: 800 }}>
+      <div style={{ width: '100%', maxWidth: 850 }}>
         <div style={{
           background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)',
           padding: '14px 20px',
