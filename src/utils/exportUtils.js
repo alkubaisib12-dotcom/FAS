@@ -279,3 +279,129 @@ export async function exportByGroupWithInvoicesIfAny(rows, {
   const zipBlob = await zip.generateAsync({ type: 'blob' });
   saveAs(zipBlob, zipName);
 }
+
+/* ========= CONSUMABLES EXPORT ========= */
+
+// Build consumables sheet with dynamic custom fields
+function makeConsumablesSheet(rows, customFields = []) {
+  const data = (rows || []).map((r) => {
+    const base = {
+      'ID': r?.id || '',
+      'Name': r?.name || '',
+      'Quantity': r?.quantity || 0,
+      'Company': r?.company || '',
+    };
+
+    // Add custom fields dynamically
+    const custom = r?.customFields || {};
+    customFields.forEach(field => {
+      base[field.fieldName] = custom[field.fieldName] || '';
+    });
+
+    base['Created At'] = r?.createdAt || '';
+    base['Updated At'] = r?.updatedAt || '';
+
+    return base;
+  });
+
+  return XLSX.utils.json_to_sheet(data);
+}
+
+// Export consumables to Excel (standalone)
+export function exportConsumablesToExcel(consumables, customFields = [], fileName = 'consumables.xlsx') {
+  const book = XLSX.utils.book_new();
+  const sheet = makeConsumablesSheet(consumables, customFields);
+  XLSX.utils.book_append_sheet(book, sheet, safeSheetName('Consumables'));
+  const buffer = XLSX.write(book, { bookType: 'xlsx', type: 'array' });
+  saveAs(new Blob([buffer]), fileName);
+}
+
+// Build combined workbook with assets and consumables sheets
+async function buildCombinedWorkbookBuffer(assetRows, consumableRows, customFields, grouped = false) {
+  const book = XLSX.utils.book_new();
+
+  if (grouped) {
+    // Assets by group (multiple sheets)
+    const list = Array.isArray(assetRows) ? assetRows : [];
+    const groups = [...new Set(list.map(a => a.group).filter(Boolean))];
+
+    groups.forEach((g) => {
+      const filtered = list.filter(a => a.group === g);
+      const sheet = makeSheetWithInvoice(filtered);
+      XLSX.utils.book_append_sheet(book, sheet, safeSheetName(g));
+    });
+
+    const ungrouped = list.filter(a => !a.group);
+    if (ungrouped.length > 0) {
+      const sheet = makeSheetWithInvoice(ungrouped);
+      XLSX.utils.book_append_sheet(book, sheet, safeSheetName('Ungrouped'));
+    }
+  } else {
+    // Assets (single sheet)
+    const assetsSheet = makeSheetWithInvoice(assetRows);
+    XLSX.utils.book_append_sheet(book, assetsSheet, safeSheetName('Assets'));
+  }
+
+  // Consumables sheet
+  const consumablesSheet = makeConsumablesSheet(consumableRows, customFields);
+  XLSX.utils.book_append_sheet(book, consumablesSheet, safeSheetName('Consumables'));
+
+  return XLSX.write(book, { bookType: 'xlsx', type: 'array' });
+}
+
+/**
+ * Export with optional consumables sheet
+ * If includeConsumables is true, adds consumables as a separate sheet
+ */
+export async function exportWithConsumablesIfAny(assetRows, {
+  excelName = 'assets.xlsx',
+  zipName = 'assets_export.zip',
+  invoicesDirName = 'invoices',
+  consumables = null,
+  customFields = [],
+  grouped = false
+} = {}) {
+  const list = Array.isArray(assetRows) ? assetRows : [];
+  const withInvoices = list
+    .map((a, idx) => ({ a, idx, url: a?.invoiceUrl ? resolveUrl(a.invoiceUrl) : '' }))
+    .filter(x => !!x.url);
+
+  // Determine if we need a combined workbook
+  const needsCombined = consumables && Array.isArray(consumables) && consumables.length > 0;
+
+  let excelBuf;
+  if (needsCombined) {
+    // Build combined workbook with both assets and consumables
+    excelBuf = await buildCombinedWorkbookBuffer(list, consumables, customFields, grouped);
+  } else {
+    // Just assets
+    if (grouped) {
+      excelBuf = await buildGroupedWorkbookBuffer(list);
+    } else {
+      excelBuf = await buildWorkbookBuffer(list, 'Assets');
+    }
+  }
+
+  // If no invoices, just save Excel
+  if (withInvoices.length === 0) {
+    saveAs(new Blob([excelBuf]), excelName);
+    return;
+  }
+
+  // Build ZIP with Excel + invoices
+  const zip = new JSZip();
+  zip.file(excelName, excelBuf);
+  const folder = zip.folder(invoicesDirName);
+
+  const blobs = await Promise.allSettled(withInvoices.map(x => fetchAsBlob(x.url)));
+  blobs.forEach((res, i) => {
+    const { a } = withInvoices[i];
+    const blob = res.status === 'fulfilled' ? res.value : null;
+    if (!blob) return;
+    const name = safeFile(a.assetId || `INV-${i + 1}`, '.pdf');
+    folder.file(name, blob);
+  });
+
+  const zipBlob = await zip.generateAsync({ type: 'blob' });
+  saveAs(zipBlob, zipName);
+}

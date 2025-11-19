@@ -8,6 +8,7 @@ import {
   deleteConsumable,
   getConsumableFields,
 } from '../utils/api';
+import { exportConsumablesToExcel } from '../utils/exportUtils';
 import Modal from './Modal';
 import CustomFieldManager from './CustomFieldManager';
 
@@ -136,6 +137,14 @@ export default function ConsumablesView() {
     );
   });
 
+  const handleExport = () => {
+    if (filteredItems.length === 0) {
+      alert('No items to export');
+      return;
+    }
+    exportConsumablesToExcel(filteredItems, customFields, 'consumables_export.xlsx');
+  };
+
   if (loading) return <div style={{ padding: 20 }}>Loading...</div>;
 
   return (
@@ -156,6 +165,9 @@ export default function ConsumablesView() {
         </button>
         <button onClick={() => setShowFieldManager(true)} style={btnStyle('secondary')}>
           Manage Custom Fields
+        </button>
+        <button onClick={handleExport} style={btnStyle('export')}>
+          Export to Excel
         </button>
       </div>
 
@@ -320,7 +332,7 @@ const btnStyle = (variant) => ({
   border: 'none',
   borderRadius: 5,
   cursor: 'pointer',
-  background: variant === 'primary' ? '#28a745' : '#6c757d',
+  background: variant === 'primary' ? '#28a745' : variant === 'export' ? '#17a2b8' : '#6c757d',
   color: '#fff'
 });
 

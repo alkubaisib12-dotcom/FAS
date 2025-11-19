@@ -1,11 +1,33 @@
 // src/components/SmartExportPanel.jsx
-import React, { useState, useMemo } from 'react';
-import { exportWithInvoicesIfAny, exportByGroupWithInvoicesIfAny } from '../utils/exportUtils';
+import React, { useState, useMemo, useEffect } from 'react';
+import { exportWithConsumablesIfAny } from '../utils/exportUtils';
+import { getAllConsumables, getConsumableFields } from '../utils/api';
 
 export default function SmartExportPanel({ assets }) {
   const [mode, setMode] = useState('all'); // 'all' | 'byGroup' | 'singleGroup'
   const [group, setGroup] = useState('');
   const [fileName, setFileName] = useState('assets_export.xlsx');
+  const [includeConsumables, setIncludeConsumables] = useState(false);
+  const [consumables, setConsumables] = useState([]);
+  const [customFields, setCustomFields] = useState([]);
+
+  // Load consumables when checkbox is checked
+  useEffect(() => {
+    if (includeConsumables) {
+      (async () => {
+        try {
+          const [items, fields] = await Promise.all([
+            getAllConsumables(),
+            getConsumableFields()
+          ]);
+          setConsumables(items || []);
+          setCustomFields(fields || []);
+        } catch (err) {
+          console.error('Failed to load consumables:', err);
+        }
+      })();
+    }
+  }, [includeConsumables]);
 
   // Current selection based on mode/group
   const selectedAssets = useMemo(() => {
@@ -116,19 +138,15 @@ export default function SmartExportPanel({ assets }) {
     const excelName = ensureXlsx(fileName || defaultName);
     const zipName = zipNameFromXlsx(excelName);
 
-    if (mode === 'byGroup') {
-      await exportByGroupWithInvoicesIfAny(assetsPrepared, {
-        excelName,
-        zipName,
-        invoicesDirName: 'invoices'
-      });
-    } else {
-      await exportWithInvoicesIfAny(assetsPrepared, {
-        excelName,
-        zipName,
-        invoicesDirName: 'invoices'
-      });
-    }
+    // Use new unified export function
+    await exportWithConsumablesIfAny(assetsPrepared, {
+      excelName,
+      zipName,
+      invoicesDirName: 'invoices',
+      consumables: includeConsumables ? consumables : null,
+      customFields: customFields,
+      grouped: mode === 'byGroup'
+    });
   };
 
   return (
@@ -166,6 +184,25 @@ export default function SmartExportPanel({ assets }) {
         <div style={{ marginTop: 6, fontSize: 12, color: '#6b7280' }}>
           If any invoice exists, a ZIP will be downloaded instead (containing this Excel and an <code>invoices/</code> folder).
         </div>
+      </div>
+
+      <div style={field}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={includeConsumables}
+            onChange={(e) => setIncludeConsumables(e.target.checked)}
+            style={{ cursor: 'pointer' }}
+          />
+          <span style={{ fontWeight: 'normal', color: '#374151' }}>
+            Include Consumables as separate sheet
+          </span>
+        </label>
+        {includeConsumables && consumables.length > 0 && (
+          <div style={{ marginTop: 6, fontSize: 12, color: '#16a34a' }}>
+            ✓ {consumables.length} consumable item{consumables.length !== 1 ? 's' : ''} will be included
+          </div>
+        )}
       </div>
 
       <div style={{ textAlign: 'center', marginTop: '20px' }}>
