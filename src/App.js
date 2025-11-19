@@ -178,7 +178,7 @@ function App() {
                 className="btn"
                 onClick={goToConsumables}
                 style={{
-                  background: 'linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%)',
+                  background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)',
                   color: '#fff',
                   fontWeight: '600'
                 }}

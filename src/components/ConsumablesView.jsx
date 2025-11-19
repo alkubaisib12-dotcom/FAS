@@ -163,7 +163,7 @@ export default function ConsumablesView() {
     <div style={{ padding: 20 }}>
       {/* Consumables Header */}
       <div style={{
-        background: 'linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%)',
+        background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)',
         padding: '16px 24px',
         borderRadius: 6,
         marginBottom: 20
@@ -199,7 +199,7 @@ export default function ConsumablesView() {
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
-            <thead style={{ background: 'linear-gradient(135deg, #a78bfa 0%, #22d3ee 100%)' }}>
+            <thead style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%)' }}>
               <tr>
                 <th style={thStyle}>ID</th>
                 <th style={thStyle}>Name</th>
@@ -378,7 +378,7 @@ const btnStyle = (variant) => ({
   border: 'none',
   borderRadius: 5,
   cursor: 'pointer',
-  background: variant === 'primary' ? '#8b5cf6' : variant === 'export' ? '#06b6d4' : '#6c757d',
+  background: variant === 'primary' ? '#2563eb' : variant === 'export' ? '#0ea5e9' : '#6c757d',
   color: '#fff',
   fontWeight: '600'
 });
@@ -390,7 +390,7 @@ const actionBtnStyle = (type) => ({
   border: 'none',
   borderRadius: 4,
   cursor: 'pointer',
-  background: type === 'edit' ? '#8b5cf6' : '#dc3545',
+  background: type === 'edit' ? '#2563eb' : '#dc3545',
   color: '#fff'
 });
 
@@ -398,11 +398,11 @@ const stockBtnStyle = {
   padding: '4px 8px',
   fontSize: 12,
   fontWeight: 600,
-  border: '1px solid #06b6d4',
+  border: '1px solid #2563eb',
   borderRadius: 4,
   cursor: 'pointer',
   background: '#fff',
-  color: '#06b6d4'
+  color: '#2563eb'
 };
 
 const fieldRow = {

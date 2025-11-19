@@ -67,13 +67,37 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
   return (
     <Modal isOpen={true} onClose={onClose}>
       <div style={{ minWidth: 600, maxWidth: 800 }}>
-        <h3 style={{ marginTop: 0, marginBottom: 20 }}>
-          {item.name} (ID: {item.id})
-        </h3>
+        <div style={{
+          background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)',
+          padding: '16px 20px',
+          borderRadius: '8px 8px 0 0',
+          marginTop: -20,
+          marginLeft: -20,
+          marginRight: -20,
+          marginBottom: 20
+        }}>
+          <h3 style={{ margin: 0, color: '#fff', fontSize: 20, fontWeight: 600 }}>
+            📦 {item.name}
+          </h3>
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.9)', marginTop: 4 }}>
+            ID: {item.id}
+          </div>
+        </div>
 
-        <div style={{ marginBottom: 20, padding: 12, background: '#f3f4f6', borderRadius: 8 }}>
-          <div style={{ fontSize: 14, color: '#6b7280' }}>Current Stock:</div>
-          <div style={{ fontSize: 28, fontWeight: 'bold', color: '#111827' }}>{item.quantity}</div>
+        <div style={{
+          marginBottom: 20,
+          padding: '16px 20px',
+          background: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)',
+          borderRadius: 8,
+          border: '2px solid #3b82f6'
+        }}>
+          <div style={{ fontSize: 13, color: '#1e40af', fontWeight: 600, marginBottom: 4 }}>
+            📊 Current Stock
+          </div>
+          <div style={{ fontSize: 32, fontWeight: 'bold', color: '#1e3a8a' }}>
+            {item.quantity}
+            <span style={{ fontSize: 14, color: '#64748b', fontWeight: 400, marginLeft: 8 }}>units</span>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -86,7 +110,7 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
               color: activeTab === 'transaction' ? '#2563eb' : '#6b7280'
             }}
           >
-            Add / Subtract
+            ⚡ Add / Subtract
           </button>
           <button
             onClick={() => setActiveTab('history')}
@@ -96,7 +120,7 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
               color: activeTab === 'history' ? '#2563eb' : '#6b7280'
             }}
           >
-            Transaction History
+            📜 Transaction History
           </button>
         </div>
 
@@ -106,7 +130,18 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
             <div style={fieldRow}>
               <label style={labelStyle}>Action *</label>
               <div style={{ display: 'flex', gap: 12 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <label style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  cursor: 'pointer',
+                  padding: '12px 16px',
+                  border: type === 'add' ? '2px solid #16a34a' : '2px solid #e5e7eb',
+                  borderRadius: 8,
+                  flex: 1,
+                  background: type === 'add' ? '#f0fdf4' : '#fff',
+                  transition: 'all 0.2s'
+                }}>
                   <input
                     type="radio"
                     name="type"
@@ -114,9 +149,20 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
                     checked={type === 'add'}
                     onChange={(e) => setType(e.target.value)}
                   />
-                  <span style={{ color: '#16a34a', fontWeight: 600 }}>➕ Add to Stock</span>
+                  <span style={{ color: '#16a34a', fontWeight: 600, fontSize: 15 }}>➕ Add to Stock</span>
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <label style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  cursor: 'pointer',
+                  padding: '12px 16px',
+                  border: type === 'subtract' ? '2px solid #dc2626' : '2px solid #e5e7eb',
+                  borderRadius: 8,
+                  flex: 1,
+                  background: type === 'subtract' ? '#fef2f2' : '#fff',
+                  transition: 'all 0.2s'
+                }}>
                   <input
                     type="radio"
                     name="type"
@@ -124,53 +170,80 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
                     checked={type === 'subtract'}
                     onChange={(e) => setType(e.target.value)}
                   />
-                  <span style={{ color: '#dc2626', fontWeight: 600 }}>➖ Use from Stock</span>
+                  <span style={{ color: '#dc2626', fontWeight: 600, fontSize: 15 }}>➖ Use from Stock</span>
                 </label>
               </div>
             </div>
 
             <div style={fieldRow}>
-              <label style={labelStyle}>Quantity *</label>
+              <label style={labelStyle}>🔢 Quantity *</label>
               <input
                 type="number"
                 min="1"
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
-                style={inputStyle}
+                style={{
+                  ...inputStyle,
+                  fontSize: 16,
+                  fontWeight: 600,
+                  borderColor: quantity ? '#3b82f6' : '#d1d5db',
+                  borderWidth: quantity ? 2 : 1
+                }}
                 placeholder="Enter quantity"
                 required
                 autoFocus
               />
               {type === 'subtract' && quantity && parseInt(quantity) > item.quantity && (
-                <div style={{ color: '#dc2626', fontSize: 12, marginTop: 4 }}>
-                  ⚠️ Insufficient stock! Only {item.quantity} available.
+                <div style={{
+                  color: '#dc2626',
+                  fontSize: 13,
+                  marginTop: 6,
+                  padding: '8px 12px',
+                  background: '#fee2e2',
+                  borderRadius: 6,
+                  border: '1px solid #fca5a5',
+                  fontWeight: 500
+                }}>
+                  ⚠️ Insufficient stock! Only {item.quantity} units available.
                 </div>
               )}
             </div>
 
             <div style={fieldRow}>
-              <label style={labelStyle}>Reason / Notes</label>
+              <label style={labelStyle}>📝 Reason / Notes</label>
               <textarea
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                style={{ ...inputStyle, minHeight: 80 }}
-                placeholder={type === 'add' ? 'e.g., Received new shipment' : 'e.g., Used for project XYZ, Assigned to John Doe'}
+                style={{ ...inputStyle, minHeight: 90, fontFamily: 'inherit' }}
+                placeholder={type === 'add' ? '💡 e.g., Received new shipment from vendor' : '💡 e.g., Used for project XYZ, Assigned to team member'}
               />
             </div>
 
-            <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+            <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
               <button
                 type="submit"
                 disabled={loading}
                 style={{
                   ...btnStyle,
-                  background: type === 'add' ? '#16a34a' : '#dc2626',
-                  opacity: loading ? 0.6 : 1
+                  background: type === 'add' ? 'linear-gradient(135deg, #16a34a 0%, #22c55e 100%)' : 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)',
+                  opacity: loading ? 0.6 : 1,
+                  flex: 1,
+                  padding: '12px 24px',
+                  fontSize: 15,
+                  boxShadow: loading ? 'none' : '0 2px 8px rgba(0,0,0,0.15)'
                 }}
               >
-                {loading ? 'Processing...' : type === 'add' ? 'Add to Stock' : 'Use from Stock'}
+                {loading ? '⏳ Processing...' : type === 'add' ? '✅ Add to Stock' : '✅ Use from Stock'}
               </button>
-              <button type="button" onClick={onClose} style={{ ...btnStyle, background: '#6c757d' }}>
+              <button
+                type="button"
+                onClick={onClose}
+                style={{
+                  ...btnStyle,
+                  background: '#6c757d',
+                  padding: '12px 24px'
+                }}
+              >
                 Cancel
               </button>
             </div>
@@ -181,23 +254,25 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
         {activeTab === 'history' && (
           <div>
             {loadingHistory ? (
-              <div style={{ textAlign: 'center', padding: 20, color: '#6b7280' }}>
-                Loading history...
+              <div style={{ textAlign: 'center', padding: 40, color: '#6b7280' }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>⏳</div>
+                <div style={{ fontSize: 14 }}>Loading history...</div>
               </div>
             ) : history.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: 20, color: '#9ca3af', fontStyle: 'italic' }}>
-                No transactions yet.
+              <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>
+                <div style={{ fontSize: 48, marginBottom: 8 }}>📭</div>
+                <div style={{ fontSize: 15, fontStyle: 'italic' }}>No transactions yet.</div>
               </div>
             ) : (
-              <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+              <div style={{ maxHeight: 400, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 8 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead style={{ background: '#f3f4f6', position: 'sticky', top: 0 }}>
+                  <thead style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%)', position: 'sticky', top: 0 }}>
                     <tr>
-                      <th style={thStyle}>Date</th>
-                      <th style={thStyle}>Type</th>
-                      <th style={thStyle}>Quantity</th>
-                      <th style={thStyle}>Reason</th>
-                      <th style={thStyle}>By</th>
+                      <th style={thStyleHistory}>📅 Date</th>
+                      <th style={thStyleHistory}>🏷️ Type</th>
+                      <th style={thStyleHistory}>🔢 Quantity</th>
+                      <th style={thStyleHistory}>📝 Reason</th>
+                      <th style={thStyleHistory}>👤 By</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -207,18 +282,19 @@ export default function TransactionModal({ item, onClose, onSuccess }) {
                         <td style={tdStyle}>
                           <span
                             style={{
-                              padding: '2px 8px',
-                              borderRadius: 4,
+                              padding: '4px 10px',
+                              borderRadius: 6,
                               fontSize: 12,
                               fontWeight: 600,
-                              background: tx.type === 'add' ? '#d1fae5' : '#fee2e2',
-                              color: tx.type === 'add' ? '#065f46' : '#991b1b'
+                              background: tx.type === 'add' ? 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)' : 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
+                              color: tx.type === 'add' ? '#065f46' : '#991b1b',
+                              display: 'inline-block'
                             }}
                           >
                             {tx.type === 'add' ? '➕ ADD' : '➖ USE'}
                           </span>
                         </td>
-                        <td style={{ ...tdStyle, fontWeight: 600 }}>{tx.quantity}</td>
+                        <td style={{ ...tdStyle, fontWeight: 700, fontSize: 15 }}>{tx.quantity}</td>
                         <td style={tdStyle}>{tx.reason || '-'}</td>
                         <td style={tdStyle}>{tx.performedBy || 'system'}</td>
                       </tr>
@@ -283,8 +359,16 @@ const thStyle = {
   color: '#374151'
 };
 
+const thStyleHistory = {
+  padding: '12px',
+  textAlign: 'left',
+  fontSize: 13,
+  fontWeight: 600,
+  color: '#fff'
+};
+
 const tdStyle = {
-  padding: '10px 12px',
+  padding: '12px',
   fontSize: 14,
   color: '#1f2937'
 };
