@@ -35,6 +35,23 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ||
 
 const normalizeOrigin = v => (v || '').toLowerCase().replace(/\/$/, '');
 
+// Allow any origin coming from a private-network IP (10.x, 172.16-31.x, 192.168.x)
+// so the app keeps working when the server changes IP / SSID without needing a redeploy.
+function isPrivateNetworkOrigin(origin) {
+  try {
+    const host = new URL(origin).hostname;
+    return (
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host) ||
+      host === 'localhost' ||
+      host === '127.0.0.1'
+    );
+  } catch {
+    return false;
+  }
+}
+
 // LDAP (meeting-app style)
 const LDAP_URL = process.env.LDAP_URL || 'ldap://10.27.16.5';
 const LDAP_BASE_DN = process.env.LDAP_BASE_DN || 'DC=swd,DC=local';
@@ -72,6 +89,8 @@ const corsOptions = {
     // allow server-to-server or tools with no Origin header
     if (!origin) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(normalizeOrigin(origin))) return cb(null, true);
+    // allow any private-network origin so the app works across IP/SSID changes
+    if (isPrivateNetworkOrigin(origin)) return cb(null, true);
     return cb(new Error('CORS blocked: ' + origin));
   },
   credentials: true,
