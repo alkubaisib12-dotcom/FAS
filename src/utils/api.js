@@ -1,13 +1,11 @@
 // src/utils/api.js
 
-// Prefer environment variable; otherwise default to the SAME host you opened the app on.
-// This avoids localhost/IP mismatches during dev and LAN testing.
+// Prefer environment variable; otherwise use the same origin as the page so that
+// the CRA dev-server proxy (or a reverse-proxy in production) can forward API
+// calls to the backend without the iPad/mobile needing direct access to port 4000.
 // Restart `npm start` after changing .env (REACT_APP_API_URL).
-const defaultHost =
-  typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-const defaultProtocol =
-  typeof window !== 'undefined' ? window.location.protocol : 'http:';
-const DEFAULT_API = `${defaultProtocol}//${defaultHost}:4000`;
+const DEFAULT_API =
+  typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3100';
 
 export const API_URL = (process.env.REACT_APP_API_URL || DEFAULT_API).replace(/\/+$/, '');
 
