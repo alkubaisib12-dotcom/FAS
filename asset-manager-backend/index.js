@@ -45,7 +45,8 @@ function isPrivateNetworkOrigin(origin) {
       /^192\.168\./.test(host) ||
       /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host) ||
       host === 'localhost' ||
-      host === '127.0.0.1'
+      host === '127.0.0.1' ||
+      !host.includes('.')   // single-label hostname = intranet (e.g. swdapp, server)
     );
   } catch {
     return false;
