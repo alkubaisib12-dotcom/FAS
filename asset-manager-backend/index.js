@@ -260,6 +260,34 @@ function ensureInvoicesTable(cb) {
   });
 }
 
+function ensureAuditLogTable(cb) {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp   TEXT    NOT NULL DEFAULT (datetime('now')),
+      user_email  TEXT    NOT NULL,
+      action      TEXT    NOT NULL,
+      entity_type TEXT    NOT NULL,
+      entity_id   TEXT,
+      details_json TEXT,
+      ip_address  TEXT
+    )
+  `, cb);
+}
+
+/* ---- Audit helper (fire-and-forget, never blocks the response) ---- */
+function logAudit(req, action, entityType, entityId, details) {
+  const user = req.session?.user?.email || (hasScanToken(req) ? 'scanner' : 'anonymous');
+  const ip   = ((req.headers['x-forwarded-for'] || '') + ',' + (req.ip || ''))
+                 .split(',')[0].trim() || 'unknown';
+  db.run(
+    `INSERT INTO audit_log (user_email, action, entity_type, entity_id, details_json, ip_address)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [user, action, entityType, String(entityId ?? ''), JSON.stringify(details ?? {}), ip],
+    (err) => { if (err) console.error('Audit log error:', err.message); }
+  );
+}
+
 // Columns that actually exist on the `assets` table (include legacy invoiceUrl)
 const ASSET_COLUMNS = new Set([
   'assetId','group','assetType','brandModel','serialNumber','assignedTo','hostName','department',
@@ -499,26 +527,62 @@ app.use((req, res, next) => {
 });
 
 /* ------------------------------ Assets API ------------------------------- */
-// include invoiceUrls[] (fallback to legacy invoiceUrl if present)
+// Supports optional server-side filtering + pagination.
+// page=0 (or omitted) → returns all rows as a flat array (backward compat / export).
+// page>0             → returns { items, total, page, pageSize }.
 app.get('/assets', (req, res) => {
-  const sql = `
-    SELECT a.*,
-           GROUP_CONCAT(ai.url, '||') AS __invoices
-    FROM assets a
-    LEFT JOIN asset_invoices ai ON ai.assetId = a.assetId
-    GROUP BY a.assetId
-    ORDER BY a.assetId
-  `;
-  db.all(sql, [], (err, rows) => {
+  const page     = parseInt(req.query.page) || 0;
+  const pageSize = Math.min(500, Math.max(1, parseInt(req.query.pageSize) || 100));
+  const search   = (req.query.search || '').trim();
+  const groups   = req.query.group       ? req.query.group.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const types    = req.query.assetType   ? req.query.assetType.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const depts    = req.query.department  ? req.query.department.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  const whereParts = [], whereParams = [];
+
+  if (search) {
+    const cols = ['a.assetId','a.brandModel','a.serialNumber','a.assignedTo',
+                  'a.department','a.assetType','a."group"','a.hostName',
+                  'a.ipAddress','a.macAddress','a.remarks'];
+    whereParts.push(`(${cols.map(c => `${c} LIKE ?`).join(' OR ')})`);
+    cols.forEach(() => whereParams.push(`%${search}%`));
+  }
+  if (groups.length) { whereParts.push(`a."group" IN (${groups.map(() => '?').join(',')})`);     whereParams.push(...groups); }
+  if (types.length)  { whereParts.push(`a.assetType IN (${types.map(() => '?').join(',')})`);    whereParams.push(...types);  }
+  if (depts.length)  { whereParts.push(`a.department IN (${depts.map(() => '?').join(',')})`);   whereParams.push(...depts);  }
+
+  const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+
+  db.get(`SELECT COUNT(*) AS total FROM assets a ${where}`, whereParams, (err, countRow) => {
     if (err) return res.status(500).json({ error: err.message });
-    const mapped = rows.map(r => {
-      const arr = r.__invoices
-        ? r.__invoices.split('||').filter(Boolean)
-        : (r.invoiceUrl ? [r.invoiceUrl] : []);
-      delete r.__invoices;
-      return { ...r, invoiceUrls: arr };
+
+    let sql = `
+      SELECT a.*,
+             GROUP_CONCAT(ai.url, '||') AS __invoices
+      FROM assets a
+      LEFT JOIN asset_invoices ai ON ai.assetId = a.assetId
+      ${where}
+      GROUP BY a.assetId
+      ORDER BY a.assetId
+    `;
+    const sqlParams = [...whereParams];
+    if (page > 0) { sql += ' LIMIT ? OFFSET ?'; sqlParams.push(pageSize, (page - 1) * pageSize); }
+
+    db.all(sql, sqlParams, (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const items = rows.map(r => {
+        const arr = r.__invoices
+          ? r.__invoices.split('||').filter(Boolean)
+          : (r.invoiceUrl ? [r.invoiceUrl] : []);
+        delete r.__invoices;
+        return { ...r, invoiceUrls: arr };
+      });
+      if (page > 0) {
+        res.json({ items, total: countRow.total, page, pageSize });
+      } else {
+        res.json(items);
+      }
     });
-    res.json(mapped);
   });
 });
 
@@ -554,6 +618,7 @@ app.post('/assets', (req, res) => {
       return res.status(200).json({ skipped: true, id: asset.assetId });
     }
     db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [asset.assetId]);
+    logAudit(req, 'asset.created', 'asset', asset.assetId, { assetType: asset.assetType, group: asset.group });
     res.status(201).json({ id: asset.assetId, inserted: true });
   });
 });
@@ -652,7 +717,10 @@ app.put('/assets/:id', (req, res) => {
           }
           db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [asset.assetId], function (err3) {
             if (err3) return rollback(err3, res);
-            db.run('COMMIT', () => res.json({ updated: 1 }));
+            db.run('COMMIT', () => {
+              logAudit(req, 'asset.updated', 'asset', asset.assetId, { previousId: oldId });
+              res.json({ updated: 1 });
+            });
           });
         });
       });
@@ -666,6 +734,7 @@ app.put('/assets/:id', (req, res) => {
         const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
         return res.status(status).json({ error: err.message });
       }
+      logAudit(req, 'asset.updated', 'asset', oldId, {});
       res.json({ updated: this.changes });
     });
   }
@@ -674,6 +743,7 @@ app.put('/assets/:id', (req, res) => {
 app.delete('/assets/:id', (req, res) => {
   db.run(`DELETE FROM assets WHERE assetId = ?`, req.params.id, function (err) {
     if (err) return res.status(500).json({ error: err.message });
+    if (this.changes > 0) logAudit(req, 'asset.deleted', 'asset', req.params.id, {});
     res.json({ deleted: this.changes });
   });
 });
@@ -693,7 +763,7 @@ app.delete('/assets/force-delete', (req, res) => {
   });
 });
 
-// Public-read (scanner + UI) — next id
+// Public-read (scanner + UI) — next id (atomic: reserves the ID inside a transaction)
 app.get('/assets/next-id/:type', (req, res) => {
   const rawType = req.params.type;
   if (!rawType || rawType.length < 2) return res.status(400).json({ error: 'Invalid asset type' });
@@ -701,16 +771,25 @@ app.get('/assets/next-id/:type', (req, res) => {
   const safePrefix = rawType.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 3);
   if (!safePrefix) return res.status(400).json({ error: 'Invalid asset type prefix' });
 
-  db.all(`SELECT assetId FROM used_ids WHERE assetId LIKE '${safePrefix}-%'`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const numbers = rows
-      .map(row => {
-        const m = row.assetId.match(new RegExp(`^${safePrefix}-(\\d+)$`));
-        return m ? parseInt(m[1], 10) : null;
-      })
-      .filter(n => n !== null);
-    const next = numbers.length ? Math.max(...numbers) + 1 : 1;
-    res.json({ id: `${safePrefix}-${String(next).padStart(3, '0')}` });
+  db.serialize(() => {
+    db.run('BEGIN EXCLUSIVE', (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      db.all(`SELECT assetId FROM used_ids WHERE assetId LIKE ?`, [`${safePrefix}-%`], (err, rows) => {
+        if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+        const numbers = rows
+          .map(row => {
+            const m = row.assetId.match(new RegExp(`^${safePrefix}-(\\d+)$`));
+            return m ? parseInt(m[1], 10) : null;
+          })
+          .filter(n => n !== null);
+        const next = numbers.length ? Math.max(...numbers) + 1 : 1;
+        const id = `${safePrefix}-${String(next).padStart(3, '0')}`;
+        db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [id], (err) => {
+          if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+          db.run('COMMIT', () => res.json({ id }));
+        });
+      });
+    });
   });
 });
 
@@ -1143,6 +1222,23 @@ app.get('/scan/stream', (req, res) => {
   });
 });
 
+/* ------------------------------ Audit Log API ----------------------------- */
+app.get('/audit-log', (req, res) => {
+  const limit      = Math.min(500, Math.max(1, parseInt(req.query.limit) || 100));
+  const entityType = req.query.entity_type || null;
+  const params     = entityType ? [entityType, limit] : [limit];
+  const where      = entityType ? `WHERE entity_type = ?` : '';
+  db.all(
+    `SELECT id, timestamp, user_email, action, entity_type, entity_id, details_json, ip_address
+     FROM audit_log ${where} ORDER BY id DESC LIMIT ?`,
+    params,
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows.map(r => ({ ...r, details: JSON.parse(r.details_json || '{}') })));
+    }
+  );
+});
+
 /* --------- SPA catch-all: authenticated users navigating directly to a route --- */
 if (fs.existsSync(BUILD_DIR)) {
   app.get(/.*/, (req, res) => res.sendFile(path.join(BUILD_DIR, 'index.html')));
@@ -1174,8 +1270,14 @@ dedupeAndIndex((err) => {
             console.error('Migration error (asset_invoices):', err5);
             process.exit(1);
           }
-          app.listen(PORT, '0.0.0.0', () => {
-            console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+          ensureAuditLogTable((err6) => {
+            if (err6) {
+              console.error('Migration error (audit_log):', err6);
+              process.exit(1);
+            }
+            app.listen(PORT, '0.0.0.0', () => {
+              console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+            });
           });
         });
       });

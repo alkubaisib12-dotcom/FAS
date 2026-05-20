@@ -57,9 +57,19 @@ export function logout() {
 
 /* ===== Assets CRUD ===== */
 
-// Get all assets
-export async function getAllAssets() {
-  return request('/assets', { method: 'GET' });
+// Get assets — optional pagination + server-side search/filter.
+// page=0 or omitted → returns all as flat array (backward compat / export).
+// page>0            → returns { items, total, page, pageSize }.
+export async function getAllAssets({ page, pageSize, search, group, assetType, department } = {}) {
+  const params = new URLSearchParams();
+  if (page)                        params.set('page',       String(page));
+  if (pageSize)                    params.set('pageSize',   String(pageSize));
+  if (search)                      params.set('search',     search);
+  if (group?.length)               params.set('group',      group.join(','));
+  if (assetType?.length)           params.set('assetType',  assetType.join(','));
+  if (department?.length)          params.set('department', department.join(','));
+  const qs = params.toString();
+  return request(`/assets${qs ? `?${qs}` : ''}`, { method: 'GET' });
 }
 
 // Add new asset (expects assetId present, per current backend contract)
