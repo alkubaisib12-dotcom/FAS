@@ -459,7 +459,16 @@ app.get('/assets/fingerprints', (req, res) => {
   });
 });
 
+/* --- Serve React static build files before the auth guard so the app shell
+     loads without a session (JS/CSS/index.html are always public).          --- */
+const BUILD_DIR = path.resolve(__dirname, '..', 'build');
+if (fs.existsSync(BUILD_DIR)) {
+  app.use(express.static(BUILD_DIR));
+}
+
 /* --------------------------- Auth Guard (global) ------------------------- */
+const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/scan', '/uploads'];
+
 app.use((req, res, next) => {
   if (
     req.path.startsWith('/health') ||
@@ -476,7 +485,15 @@ app.use((req, res, next) => {
  (req.method === 'POST' && req.path === '/scan') ||
  (req.method === 'GET'  && req.path === '/scan/stream')  )) return next();
 
-  if (!req.session?.user) return res.status(401).json({ error: 'Auth required' });
+  if (!req.session?.user) {
+    const isApiCall = API_PREFIXES.some(p => req.path.startsWith(p));
+    if (isApiCall) return res.status(401).json({ error: 'Auth required' });
+    // Non-API path (SPA route): serve index.html so React handles auth
+    const idx = path.join(BUILD_DIR, 'index.html');
+    return fs.existsSync(idx)
+      ? res.sendFile(idx)
+      : res.status(401).json({ error: 'Auth required' });
+  }
   next();
 });
 
@@ -1125,11 +1142,8 @@ app.get('/scan/stream', (req, res) => {
   });
 });
 
-/* --------- Serve React static build (must come after all API routes) --------- */
-const BUILD_DIR = path.resolve(__dirname, '..', 'build');
+/* --------- SPA catch-all: authenticated users navigating directly to a route --- */
 if (fs.existsSync(BUILD_DIR)) {
-  app.use(express.static(BUILD_DIR));
-  // Return index.html for any non-API route so client-side routing works
   app.get(/.*/, (req, res) => res.sendFile(path.join(BUILD_DIR, 'index.html')));
 }
 
