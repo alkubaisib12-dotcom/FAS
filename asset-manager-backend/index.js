@@ -1125,6 +1125,14 @@ app.get('/scan/stream', (req, res) => {
   });
 });
 
+/* --------- Serve React static build (must come after all API routes) --------- */
+const BUILD_DIR = path.resolve(__dirname, '..', 'build');
+if (fs.existsSync(BUILD_DIR)) {
+  app.use(express.static(BUILD_DIR));
+  // Return index.html for any non-API route so client-side routing works
+  app.get(/.*/, (req, res) => res.sendFile(path.join(BUILD_DIR, 'index.html')));
+}
+
 /* --------------------------------- Start --------------------------------- */
 dedupeAndIndex((err) => {
   if (err) {
