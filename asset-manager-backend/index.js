@@ -132,19 +132,6 @@ app.options(/.*/, cors(corsOptions));
 
 app.use(cookieParser());
 app.use(express.json());
-app.use(session({
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: 'lax',
-    // secure: true,
-  }
-}));
-
-// Static serving for uploads
-app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 
 /* ------------------------------ SQLite ---------------------------------- */
 const dbPath = path.resolve(__dirname, 'assets.db');
@@ -152,6 +139,64 @@ const db = new sqlite3.Database(dbPath);
 
 // Enable FK so ON DELETE CASCADE works
 db.run('PRAGMA foreign_keys = ON');
+
+/* ---- SQLite-backed session store (survives server restarts) ---- */
+class SQLiteSessionStore extends session.Store {
+  constructor(db) {
+    super();
+    this._db = db;
+    this._db.run(`CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      expires INTEGER NOT NULL
+    )`);
+    // Prune expired sessions every 15 minutes
+    setInterval(() => {
+      this._db.run('DELETE FROM sessions WHERE expires < ?', [Date.now()]);
+    }, 15 * 60 * 1000).unref();
+  }
+  get(sid, cb) {
+    this._db.get('SELECT data, expires FROM sessions WHERE sid = ?', [sid], (err, row) => {
+      if (err) return cb(err);
+      if (!row) return cb(null, null);
+      if (row.expires < Date.now()) {
+        this._db.run('DELETE FROM sessions WHERE sid = ?', [sid]);
+        return cb(null, null);
+      }
+      try { cb(null, JSON.parse(row.data)); } catch (e) { cb(e); }
+    });
+  }
+  set(sid, sess, cb) {
+    const maxAge = (sess.cookie && sess.cookie.maxAge) ? sess.cookie.maxAge : 7 * 24 * 60 * 60 * 1000;
+    const expires = Date.now() + maxAge;
+    const data = JSON.stringify(sess);
+    this._db.run(
+      'INSERT OR REPLACE INTO sessions (sid, data, expires) VALUES (?, ?, ?)',
+      [sid, data, expires],
+      cb || (() => {})
+    );
+  }
+  destroy(sid, cb) {
+    this._db.run('DELETE FROM sessions WHERE sid = ?', [sid], cb || (() => {}));
+  }
+  touch(sid, sess, cb) { this.set(sid, sess, cb); }
+}
+
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  store: new SQLiteSessionStore(db),
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days — survives browser close
+    // secure: true,
+  }
+}));
+
+// Static serving for uploads
+app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 
 db.run(`CREATE TABLE IF NOT EXISTS assets (
   assetId TEXT PRIMARY KEY,
