@@ -138,6 +138,15 @@ export async function scanNetwork(target) {
   });
 }
 
+// Check which serial numbers already exist in the DB
+// Returns { existing: { 'SERIAL': { assetId, hostName, assignedTo, assetType } } }
+export async function checkSerials(serials) {
+  return request('/assets/check-serials', {
+    method: 'POST',
+    body: JSON.stringify({ serials }),
+  });
+}
+
 // Bulk add assets
 export async function bulkAddAssets(assets) {
   return request(`/assets/bulk`, {

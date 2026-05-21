@@ -1,7 +1,7 @@
 // src/components/ManageEngineModal.jsx
 import React, { useState, useRef } from 'react';
 import Modal from './Modal';
-import { API_URL, bulkAddAssets, getNextAssetId } from '../utils/api';
+import { API_URL, bulkAddAssets, getNextAssetId, checkSerials } from '../utils/api';
 
 // ── CSV parser ────────────────────────────────────────────────────────────────
 function parseCSV(text) {
@@ -210,6 +210,10 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
   const [apiDevices, setApiDevices] = useState([]);
   const [fetching, setFetching] = useState(false);
 
+  // Duplicate tracking  { serialNumber: { assetId, hostName, assignedTo, assetType } }
+  const [existingMap, setExistingMap] = useState({});
+  const [checking, setChecking] = useState(false);
+
   // Shared
   const [selected, setSelected] = useState({});
   const [createMonitors, setCreateMonitors] = useState(true);
@@ -225,6 +229,32 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
     ? mePairs.filter((_, i) => selected[i]).length
     : devices.filter((_, i) => selected[i]).length;
 
+  // ── Check which serials are already in the DB ──
+  const runSerialCheck = async (pairs, genericDevs) => {
+    setChecking(true);
+    try {
+      const serials = [];
+      if (pairs.length) {
+        pairs.forEach(p => {
+          if (p.pc.serialNumber)      serials.push(p.pc.serialNumber);
+          if (p.monitor?.serialNumber) serials.push(p.monitor.serialNumber);
+        });
+      } else {
+        genericDevs.forEach(d => { if (d.serialNumber) serials.push(d.serialNumber); });
+      }
+      if (serials.length) {
+        const { existing } = await checkSerials(serials);
+        setExistingMap(existing || {});
+      } else {
+        setExistingMap({});
+      }
+    } catch {
+      setExistingMap({}); // non-fatal: just skip the check
+    } finally {
+      setChecking(false);
+    }
+  };
+
   // ── File upload ──
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -233,16 +263,15 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
     reader.onload = (ev) => {
       const { headers, rows } = parseCSV(ev.target.result);
       if (!headers.length) { setError('Could not parse CSV.'); return; }
-      setError(''); setResult(null);
+      setError(''); setResult(null); setExistingMap({});
 
       if (isManageEngineFullExport(headers)) {
-        // ManageEngine paired mode
         const pairs = parseManageEnginePairs(headers, rows);
         setCsvMode('me-paired');
         setMePairs(pairs);
         setSelected(Object.fromEntries(pairs.map((_, i) => [i, true])));
+        runSerialCheck(pairs, []);
       } else {
-        // Generic CSV mode
         const map = autoMapColumns(headers);
         setCsvHeaders(headers);
         setColMap(map);
@@ -251,6 +280,7 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
         setCsvMode('generic');
         setGenericDevices(parsed);
         setSelected(Object.fromEntries(parsed.map((_, i) => [i, true])));
+        runSerialCheck([], parsed);
       }
     };
     reader.readAsText(file);
@@ -274,6 +304,7 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
       if (!devs.length) { setError('No devices returned from ManageEngine.'); return; }
       setApiDevices(devs);
       setSelected(Object.fromEntries(devs.map((_, i) => [i, true])));
+      runSerialCheck([], devs);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -285,19 +316,30 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
   const handleImportPaired = async () => {
     const toImport = mePairs.filter((_, i) => selected[i]);
     if (!toImport.length) { setError('Select at least one computer.'); return; }
+
+    // Filter out assets whose serial already exists in the DB
+    const needPC  = toImport.filter(p => !existingMap[p.pc.serialNumber]);
+    const needMon = createMonitors
+      ? toImport.filter(p => p.monitor && !existingMap[p.monitor.serialNumber])
+      : [];
+
+    const skippedPCs  = toImport.length - needPC.length;
+    const skippedMons = createMonitors
+      ? toImport.filter(p => p.monitor && existingMap[p.monitor.serialNumber]).length
+      : 0;
+
+    if (needPC.length === 0 && needMon.length === 0) {
+      setError(`All ${toImport.length} selected assets already exist in the database — nothing to import.`);
+      return;
+    }
+
     setImporting(true); setError('');
-
-    const pcCount  = toImport.length;
-    const monCount = createMonitors ? toImport.filter(p => p.monitor).length : 0;
-    const total    = pcCount + monCount;
-
+    const total = needPC.length + needMon.length;
     setImportProgress(`Generating ${total} asset IDs…`);
+
     try {
-      // Generate all IDs in parallel (SQLite serializes exclusive transactions internally)
-      const pcIdPromises  = toImport.map(p => getNextAssetId(p.pc.assetType));
-      const monIdPromises = createMonitors
-        ? toImport.map(p => p.monitor ? getNextAssetId('Monitor') : Promise.resolve(null))
-        : toImport.map(() => Promise.resolve(null));
+      const pcIdPromises  = needPC.map(p  => getNextAssetId(p.pc.assetType));
+      const monIdPromises = needMon.map(() => getNextAssetId('Monitor'));
 
       const [pcIds, monIds] = await Promise.all([
         Promise.all(pcIdPromises),
@@ -306,13 +348,17 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
 
       setImportProgress(`Inserting ${total} assets…`);
       const allAssets = [];
-      toImport.forEach((pair, i) => {
-        allAssets.push({ ...pair.pc, assetId: pcIds[i] });
-        if (monIds[i]) allAssets.push({ ...pair.monitor, assetId: monIds[i] });
-      });
+      needPC.forEach((pair, i)  => allAssets.push({ ...pair.pc,      assetId: pcIds[i] }));
+      needMon.forEach((pair, i) => allAssets.push({ ...pair.monitor, assetId: monIds[i] }));
 
       const res = await bulkAddAssets(allAssets);
-      setResult({ ...res, pcCount, monCount: monIds.filter(Boolean).length });
+      setResult({
+        ...res,
+        pcCount:      needPC.length,
+        monCount:     needMon.length,
+        skippedPCs,
+        skippedMons,
+      });
       onImported?.();
     } catch (e) {
       setError(e.message);
@@ -350,14 +396,17 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
     setCsvMode('generic'); setGenericDevices([]); setMePairs([]);
     setCsvHeaders([]); setColMap({}); setApiDevices([]);
     setSelected({}); setError(''); setResult(null); setImportProgress('');
+    setExistingMap({});
     if (fileRef.current) fileRef.current.value = '';
   };
 
   if (!isOpen) return null;
 
   const mePairedActive = tab === 'csv' && csvMode === 'me-paired';
-  const monitorsThatWillBeCreated = mePairedActive && createMonitors
-    ? mePairs.filter((p, i) => selected[i] && p.monitor).length : 0;
+  const selectedPairs  = mePairs.filter((_, i) => selected[i]);
+  const newPCs     = selectedPairs.filter(p => !existingMap[p.pc.serialNumber]).length;
+  const newMonitors= createMonitors ? selectedPairs.filter(p => p.monitor && !existingMap[p.monitor.serialNumber]).length : 0;
+  const monitorsThatWillBeCreated = newMonitors;
 
   return (
     <Modal isOpen={isOpen} onClose={() => { reset(); onClose(); }}>
@@ -402,17 +451,24 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
           )}
 
           {/* ME Paired mode: banner */}
-          {mePairedActive && (
-            <div style={{ ...infoBanner, background: '#f0fdf4', borderColor: '#bbf7d0', color: '#166534', marginTop: 10 }}>
-              <strong>ManageEngine Full Export Detected — Paired Import Mode</strong>
-              <br />
-              <span style={{ fontSize: 12 }}>
-                Found <strong>{mePairs.length}</strong> computers &nbsp;·&nbsp;
-                <strong>{mePairs.filter(p => p.monitor).length}</strong> with confirmed monitors &nbsp;·&nbsp;
-                <strong>{mePairs.filter(p => !p.monitor).length}</strong> PC only (no monitor serial)
-              </span>
-            </div>
-          )}
+          {mePairedActive && (() => {
+            const dupPCs  = mePairs.filter(p => existingMap[p.pc.serialNumber]).length;
+            const dupMons = mePairs.filter(p => p.monitor && existingMap[p.monitor.serialNumber]).length;
+            const newPCs  = mePairs.length - dupPCs;
+            return (
+              <div style={{ ...infoBanner, background: '#f0fdf4', borderColor: '#bbf7d0', color: '#166534', marginTop: 10 }}>
+                <strong>ManageEngine Full Export Detected — Paired Import Mode</strong>
+                {checking && <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>Checking database…</span>}
+                <div style={{ marginTop: 6, display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
+                  <span>📦 <strong>{mePairs.length}</strong> computers total</span>
+                  <span>🖥 <strong>{mePairs.filter(p => p.monitor).length}</strong> with monitors</span>
+                  {dupPCs > 0 && <span style={{ color: '#b45309', background: '#fef3c7', borderRadius: 4, padding: '1px 7px' }}>⚠ <strong>{dupPCs}</strong> PC serial{dupPCs > 1 ? 's' : ''} already in DB</span>}
+                  {dupMons > 0 && <span style={{ color: '#b45309', background: '#fef3c7', borderRadius: 4, padding: '1px 7px' }}>⚠ <strong>{dupMons}</strong> monitor serial{dupMons > 1 ? 's' : ''} already in DB</span>}
+                  {dupPCs === 0 && !checking && <span style={{ color: '#166534' }}>✓ No duplicates found</span>}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -510,48 +566,69 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
               </tr>
             </thead>
             <tbody>
-              {mePairs.map((pair, i) => (
-                <tr key={i}
-                  style={{ background: i % 2 === 0 ? '#fff' : '#f9fafb', cursor: 'pointer' }}
-                  onClick={() => setSelected(s => ({ ...s, [i]: !s[i] }))}>
-                  <td style={tdStyle} onClick={e => e.stopPropagation()}>
-                    <input type="checkbox" checked={!!selected[i]}
-                      onChange={e => setSelected(s => ({ ...s, [i]: e.target.checked }))} />
-                  </td>
-                  <td style={{ ...tdStyle, fontWeight: 600 }}>{pair.pc.hostName}</td>
-                  <td style={tdStyle}>
-                    <span style={{
-                      background: pair.pc.assetType === 'Server' ? '#fef3c7' :
-                                  pair.pc.assetType === 'Laptop'  ? '#ede9fe' : '#dbeafe',
-                      color: pair.pc.assetType === 'Server' ? '#92400e' :
-                             pair.pc.assetType === 'Laptop'  ? '#5b21b6' : '#1e40af',
-                      borderRadius: 4, padding: '1px 6px', fontSize: 11
-                    }}>
-                      {pair.pc.assetType}
-                    </span>
-                  </td>
-                  <td style={tdStyle}>{pair.pc.serialNumber || '—'}</td>
-                  <td style={{ ...tdStyle, maxWidth: 160 }}>{pair.pc.brandModel || '—'}</td>
-                  <td style={tdStyle}>{pair.pc.assignedTo || '—'}</td>
-                  <td style={{ ...tdStyle, maxWidth: 140 }}>{pair.pc.department || '—'}</td>
-                  {/* Monitor columns */}
-                  <td style={{ ...tdStyle, borderLeft: '2px solid #a7f3d0', background: pair.monitor ? '#f0fdf4' : undefined }}>
-                    {pair.monitor ? pair.monitor.brandModel : <span style={{ color: '#9ca3af' }}>—</span>}
-                  </td>
-                  <td style={{ ...tdStyle, background: pair.monitor ? '#f0fdf4' : undefined }}>
-                    {pair.monitor ? pair.monitor.serialNumber : <span style={{ color: '#9ca3af' }}>—</span>}
-                  </td>
-                  <td style={{ ...tdStyle, background: pair.monitor ? '#f0fdf4' : undefined }}>
-                    {pair.monitor ? pair.monitor.remarks : <span style={{ color: '#9ca3af' }}>—</span>}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: 'center' }}>
-                    {pair.monitor && createMonitors
-                      ? <span style={{ background: '#d1fae5', color: '#065f46', borderRadius: 10, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap' }}>PC + Monitor</span>
-                      : <span style={{ background: '#dbeafe', color: '#1e40af', borderRadius: 10, padding: '2px 8px', fontSize: 11 }}>PC only</span>
-                    }
-                  </td>
-                </tr>
-              ))}
+              {mePairs.map((pair, i) => {
+                const pcExists  = !!existingMap[pair.pc.serialNumber];
+                const monExists = !!(pair.monitor && existingMap[pair.monitor.serialNumber]);
+                const rowBg = i % 2 === 0 ? '#fff' : '#f9fafb';
+                return (
+                  <tr key={i}
+                    style={{ background: pcExists ? '#fffbeb' : rowBg, cursor: 'pointer' }}
+                    onClick={() => setSelected(s => ({ ...s, [i]: !s[i] }))}>
+                    <td style={tdStyle} onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" checked={!!selected[i]}
+                        onChange={e => setSelected(s => ({ ...s, [i]: e.target.checked }))} />
+                    </td>
+                    <td style={{ ...tdStyle, fontWeight: 600 }}>
+                      {pair.pc.hostName}
+                      {pcExists && (
+                        <div style={{ fontSize: 10, color: '#b45309', marginTop: 1 }}>
+                          already in DB as {existingMap[pair.pc.serialNumber].assetId}
+                        </div>
+                      )}
+                    </td>
+                    <td style={tdStyle}>
+                      <span style={{
+                        background: pair.pc.assetType === 'Server' ? '#fef3c7' :
+                                    pair.pc.assetType === 'Laptop'  ? '#ede9fe' : '#dbeafe',
+                        color: pair.pc.assetType === 'Server' ? '#92400e' :
+                               pair.pc.assetType === 'Laptop'  ? '#5b21b6' : '#1e40af',
+                        borderRadius: 4, padding: '1px 6px', fontSize: 11
+                      }}>
+                        {pair.pc.assetType}
+                      </span>
+                    </td>
+                    <td style={tdStyle}>{pair.pc.serialNumber || '—'}</td>
+                    <td style={{ ...tdStyle, maxWidth: 160 }}>{pair.pc.brandModel || '—'}</td>
+                    <td style={tdStyle}>{pair.pc.assignedTo || '—'}</td>
+                    <td style={{ ...tdStyle, maxWidth: 140 }}>{pair.pc.department || '—'}</td>
+                    {/* Monitor columns */}
+                    <td style={{ ...tdStyle, borderLeft: '2px solid #a7f3d0', background: pair.monitor ? (monExists ? '#fef9c3' : '#f0fdf4') : undefined }}>
+                      {pair.monitor ? (
+                        <>
+                          {pair.monitor.brandModel}
+                          {monExists && <div style={{ fontSize: 10, color: '#b45309' }}>in DB: {existingMap[pair.monitor.serialNumber].assetId}</div>}
+                        </>
+                      ) : <span style={{ color: '#9ca3af' }}>—</span>}
+                    </td>
+                    <td style={{ ...tdStyle, background: pair.monitor ? (monExists ? '#fef9c3' : '#f0fdf4') : undefined }}>
+                      {pair.monitor ? pair.monitor.serialNumber : <span style={{ color: '#9ca3af' }}>—</span>}
+                    </td>
+                    <td style={{ ...tdStyle, background: pair.monitor ? (monExists ? '#fef9c3' : '#f0fdf4') : undefined }}>
+                      {pair.monitor ? pair.monitor.remarks : <span style={{ color: '#9ca3af' }}>—</span>}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'center' }}>
+                      {pcExists
+                        ? <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 10, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap' }}>PC exists</span>
+                        : pair.monitor && createMonitors
+                          ? <span style={{ background: '#d1fae5', color: '#065f46', borderRadius: 10, padding: '2px 8px', fontSize: 11, whiteSpace: 'nowrap' }}>
+                              {monExists ? 'PC new + Mon exists' : 'PC + Monitor'}
+                            </span>
+                          : <span style={{ background: '#dbeafe', color: '#1e40af', borderRadius: 10, padding: '2px 8px', fontSize: 11 }}>PC only</span>
+                      }
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -604,16 +681,19 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
       {result && (
         <div style={{ color: '#166534', background: '#dcfce7', border: '1px solid #bbf7d0',
           borderRadius: 6, padding: '10px 14px', marginTop: 12, fontSize: 13 }}>
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>Import complete</div>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Import complete</div>
           {result.pcCount !== undefined ? (
-            <>
-              <div>PC assets created: <strong>{result.pcCount}</strong></div>
-              {result.monCount > 0 && <div>Monitor assets created: <strong>{result.monCount}</strong></div>}
-            </>
-          ) : null}
-          <div>Total inserted: <strong>{result.inserted}</strong>
-            {result.skipped > 0 ? ` — ${result.skipped} skipped (already exist)` : ''}
-          </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div>✓ PC assets created: <strong>{result.pcCount}</strong></div>
+              {result.monCount > 0 && <div>✓ Monitor assets created: <strong>{result.monCount}</strong></div>}
+              {result.skippedPCs  > 0 && <div style={{ color: '#92400e' }}>⏭ PCs skipped (already in DB): <strong>{result.skippedPCs}</strong></div>}
+              {result.skippedMons > 0 && <div style={{ color: '#92400e' }}>⏭ Monitors skipped (already in DB): <strong>{result.skippedMons}</strong></div>}
+            </div>
+          ) : (
+            <div>Total inserted: <strong>{result.inserted}</strong>
+              {result.skipped > 0 ? ` — ${result.skipped} skipped (already exist)` : ''}
+            </div>
+          )}
         </div>
       )}
 
@@ -631,7 +711,9 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
             style={{ ...btnGreen, opacity: (importing || selectedCount === 0) ? 0.6 : 1, cursor: (importing || selectedCount === 0) ? 'not-allowed' : 'pointer' }}>
             {importing ? importProgress || 'Importing…' : (
               mePairedActive
-                ? `Import ${selectedCount} PC${selectedCount !== 1 ? 's' : ''}${createMonitors && monitorsThatWillBeCreated > 0 ? ` + ${monitorsThatWillBeCreated} Monitor${monitorsThatWillBeCreated !== 1 ? 's' : ''}` : ''}`
+                ? newPCs === 0 && newMonitors === 0
+                  ? `All ${selectedCount} already in DB`
+                  : `Import ${newPCs} new PC${newPCs !== 1 ? 's' : ''}${newMonitors > 0 ? ` + ${newMonitors} Monitor${newMonitors !== 1 ? 's' : ''}` : ''}${selectedCount - newPCs > 0 ? ` (${selectedCount - newPCs} will skip)` : ''}`
                 : `Import ${selectedCount} Device${selectedCount !== 1 ? 's' : ''}`
             )}
           </button>

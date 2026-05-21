@@ -680,6 +680,29 @@ app.post('/assets', (req, res) => {
 });
 
 // Bulk add — normalization + counts inserted vs skipped
+// Check which serial numbers already exist in the DB
+// Body: { serials: ['SN1', 'SN2', ...] }
+// Returns: { existing: { 'SN1': { assetId, hostName, assignedTo, assetType }, ... } }
+app.post('/assets/check-serials', (req, res) => {
+  const { serials } = req.body || {};
+  if (!Array.isArray(serials) || serials.length === 0) return res.json({ existing: {} });
+  const clean = [...new Set(serials.map(s => String(s).trim()).filter(Boolean))];
+  if (clean.length === 0) return res.json({ existing: {} });
+  const ph = clean.map(() => '?').join(',');
+  db.all(
+    `SELECT assetId, serialNumber, hostName, assignedTo, assetType, "group" FROM assets WHERE serialNumber IN (${ph})`,
+    clean,
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const existing = {};
+      for (const row of rows) {
+        if (row.serialNumber) existing[row.serialNumber] = row;
+      }
+      res.json({ existing });
+    }
+  );
+});
+
 app.post('/assets/bulk', (req, res) => {
   const list = req.body?.assets;
   if (!Array.isArray(list) || list.length === 0) return res.status(400).json({ error: 'No assets provided' });
