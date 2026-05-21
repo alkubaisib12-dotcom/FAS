@@ -889,6 +889,60 @@ app.get('/assets/next-id/:type', (req, res) => {
   });
 });
 
+// Bulk ID generation — generates N IDs in ONE exclusive transaction (no parallel-request collisions).
+// Body: { types: ['Desktop / Laptop', 'Monitor', 'Laptop', ...] }
+// Returns: { ids: ['DES-001', 'MON-001', 'LAP-001', ...] }  — one id per type, same order.
+app.post('/assets/bulk-next-ids', (req, res) => {
+  const { types } = req.body || {};
+  if (!Array.isArray(types) || types.length === 0)
+    return res.status(400).json({ error: 'types array is required' });
+
+  db.serialize(() => {
+    db.run('BEGIN EXCLUSIVE', (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Read ALL currently reserved IDs once
+      db.all('SELECT assetId FROM used_ids', [], (err, rows) => {
+        if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+
+        // Build prefix → current-max counter from existing IDs
+        const counters = {};
+        for (const { assetId } of rows) {
+          const m = assetId.match(/^([A-Z]{1,4})-(\d+)$/);
+          if (m) counters[m[1]] = Math.max(counters[m[1]] || 0, parseInt(m[2], 10));
+        }
+
+        // Derive one new ID per requested type (incrementing the counter each time)
+        const newIds = types.map(type => {
+          const prefix = String(type || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 3);
+          if (!prefix) return null;
+          counters[prefix] = (counters[prefix] || 0) + 1;
+          return `${prefix}-${String(counters[prefix]).padStart(3, '0')}`;
+        });
+
+        const validIds = newIds.filter(Boolean);
+
+        // Insert all new IDs sequentially inside the same exclusive transaction
+        let i = 0;
+        const insertNext = () => {
+          if (i >= validIds.length) {
+            db.run('COMMIT', (err) => {
+              if (err) return res.status(500).json({ error: err.message });
+              res.json({ ids: newIds });
+            });
+            return;
+          }
+          db.run('INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)', [validIds[i++]], (err) => {
+            if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+            insertNext();
+          });
+        };
+        insertNext();
+      });
+    });
+  });
+});
+
 /* -------------------------- Invoices upload API -------------------------- */
 const invoicesDir = path.resolve(__dirname, 'uploads', 'invoices');
 fs.mkdirSync(invoicesDir, { recursive: true });

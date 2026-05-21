@@ -138,6 +138,17 @@ export async function scanNetwork(target) {
   });
 }
 
+// Generate N asset IDs in one server round-trip (avoids parallel-transaction errors).
+// types: array of assetType strings, e.g. ['Desktop / Laptop', 'Monitor', 'Laptop']
+// Returns array of IDs in the same order, e.g. ['DES-001', 'MON-001', 'LAP-001']
+export async function bulkNextIds(types) {
+  const { ids } = await request('/assets/bulk-next-ids', {
+    method: 'POST',
+    body: JSON.stringify({ types }),
+  });
+  return ids;
+}
+
 // Check which serial numbers already exist in the DB
 // Returns { existing: { 'SERIAL': { assetId, hostName, assignedTo, assetType } } }
 export async function checkSerials(serials) {

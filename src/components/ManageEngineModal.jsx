@@ -1,7 +1,7 @@
 // src/components/ManageEngineModal.jsx
 import React, { useState, useRef } from 'react';
 import Modal from './Modal';
-import { API_URL, bulkAddAssets, getNextAssetId, checkSerials } from '../utils/api';
+import { API_URL, bulkAddAssets, bulkNextIds, checkSerials } from '../utils/api';
 
 // ── CSV parser ────────────────────────────────────────────────────────────────
 function parseCSV(text) {
@@ -317,7 +317,7 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
     const toImport = mePairs.filter((_, i) => selected[i]);
     if (!toImport.length) { setError('Select at least one computer.'); return; }
 
-    // Filter out assets whose serial already exists in the DB
+    // Only create assets whose serial is NOT already in the DB
     const needPC  = toImport.filter(p => !existingMap[p.pc.serialNumber]);
     const needMon = createMonitors
       ? toImport.filter(p => p.monitor && !existingMap[p.monitor.serialNumber])
@@ -335,30 +335,27 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
 
     setImporting(true); setError('');
     const total = needPC.length + needMon.length;
-    setImportProgress(`Generating ${total} asset IDs…`);
+    setImportProgress(`Generating ${total} IDs in one request…`);
 
     try {
-      const pcIdPromises  = needPC.map(p  => getNextAssetId(p.pc.assetType));
-      const monIdPromises = needMon.map(() => getNextAssetId('Monitor'));
+      // ONE round-trip generates all IDs atomically — no parallel transaction collisions
+      const types = [
+        ...needPC.map(p => p.pc.assetType),
+        ...needMon.map(() => 'Monitor'),
+      ];
+      const ids = await bulkNextIds(types);
 
-      const [pcIds, monIds] = await Promise.all([
-        Promise.all(pcIdPromises),
-        Promise.all(monIdPromises),
-      ]);
+      const pcIds  = ids.slice(0, needPC.length);
+      const monIds = ids.slice(needPC.length);
 
       setImportProgress(`Inserting ${total} assets…`);
-      const allAssets = [];
-      needPC.forEach((pair, i)  => allAssets.push({ ...pair.pc,      assetId: pcIds[i] }));
-      needMon.forEach((pair, i) => allAssets.push({ ...pair.monitor, assetId: monIds[i] }));
+      const allAssets = [
+        ...needPC.map((pair, i)  => ({ ...pair.pc,      assetId: pcIds[i] })),
+        ...needMon.map((pair, i) => ({ ...pair.monitor, assetId: monIds[i] })),
+      ];
 
       const res = await bulkAddAssets(allAssets);
-      setResult({
-        ...res,
-        pcCount:      needPC.length,
-        monCount:     needMon.length,
-        skippedPCs,
-        skippedMons,
-      });
+      setResult({ ...res, pcCount: needPC.length, monCount: needMon.length, skippedPCs, skippedMons });
       onImported?.();
     } catch (e) {
       setError(e.message);
@@ -368,17 +365,17 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
     }
   };
 
-  // ── Import: generic mode ──
+  // ── Import: generic / API mode ──
   const handleImportGeneric = async () => {
     const toImport = devices.filter((_, i) => selected[i]);
     if (!toImport.length) { setError('Select at least one device.'); return; }
     setImporting(true); setError('');
     try {
-      const withIds = [];
-      for (const d of toImport) {
-        const id = await getNextAssetId(assetType);
-        withIds.push({ ...d, assetId: id, group, assetType, status: d.status || 'Active' });
-      }
+      // One round-trip for all IDs
+      const ids = await bulkNextIds(toImport.map(() => assetType));
+      const withIds = toImport.map((d, i) => ({
+        ...d, assetId: ids[i], group, assetType, status: d.status || 'Active',
+      }));
       const res = await bulkAddAssets(withIds);
       setResult(res);
       onImported?.();
