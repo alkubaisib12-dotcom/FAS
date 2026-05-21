@@ -348,14 +348,22 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
       const pcIds  = ids.slice(0, needPC.length);
       const monIds = ids.slice(needPC.length);
 
-      setImportProgress(`Inserting ${total} assets…`);
       const allAssets = [
         ...needPC.map((pair, i)  => ({ ...pair.pc,      assetId: pcIds[i] })),
         ...needMon.map((pair, i) => ({ ...pair.monitor, assetId: monIds[i] })),
       ];
 
-      const res = await bulkAddAssets(allAssets);
-      setResult({ ...res, pcCount: needPC.length, monCount: needMon.length, skippedPCs, skippedMons });
+      // Send in chunks of 50 to avoid hitting Express body-size limits
+      const CHUNK = 50;
+      let inserted = 0, skipped = 0;
+      for (let i = 0; i < allAssets.length; i += CHUNK) {
+        const chunk = allAssets.slice(i, i + CHUNK);
+        setImportProgress(`Inserting assets ${i + 1}–${Math.min(i + CHUNK, allAssets.length)} of ${allAssets.length}…`);
+        const r = await bulkAddAssets(chunk);
+        inserted += r.inserted ?? chunk.length;
+        skipped  += r.skipped  ?? 0;
+      }
+      setResult({ inserted, skipped, pcCount: needPC.length, monCount: needMon.length, skippedPCs, skippedMons });
       onImported?.();
     } catch (e) {
       setError(e.message);
@@ -376,8 +384,14 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
       const withIds = toImport.map((d, i) => ({
         ...d, assetId: ids[i], group, assetType, status: d.status || 'Active',
       }));
-      const res = await bulkAddAssets(withIds);
-      setResult(res);
+      const CHUNK = 50;
+      let inserted = 0, skipped = 0;
+      for (let i = 0; i < withIds.length; i += CHUNK) {
+        const r = await bulkAddAssets(withIds.slice(i, i + CHUNK));
+        inserted += r.inserted ?? withIds.slice(i, i + CHUNK).length;
+        skipped  += r.skipped  ?? 0;
+      }
+      setResult({ inserted, skipped });
       onImported?.();
     } catch (e) {
       setError(e.message);
