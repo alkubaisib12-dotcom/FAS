@@ -1239,6 +1239,21 @@ app.get('/audit-log', (req, res) => {
   );
 });
 
+/* ----------- Duplicate serial-number check (used by add/edit form) ----------- */
+app.get('/assets/check-duplicate', (req, res) => {
+  const serial    = (req.query.serialNumber || '').trim();
+  const excludeId = (req.query.excludeId   || '').trim();
+  if (!serial) return res.json({ exists: false });
+  const sql    = excludeId
+    ? `SELECT assetId FROM assets WHERE serialNumber = ? AND assetId != ? LIMIT 1`
+    : `SELECT assetId FROM assets WHERE serialNumber = ? LIMIT 1`;
+  const params = excludeId ? [serial, excludeId] : [serial];
+  db.get(sql, params, (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ exists: !!row, assetId: row?.assetId ?? null });
+  });
+});
+
 /* --------- SPA catch-all: authenticated users navigating directly to a route --- */
 if (fs.existsSync(BUILD_DIR)) {
   app.get(/.*/, (req, res) => res.sendFile(path.join(BUILD_DIR, 'index.html')));

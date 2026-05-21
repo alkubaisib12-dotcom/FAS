@@ -55,6 +55,13 @@ export function logout() {
   return request('/auth/logout', { method: 'POST' });
 }
 
+/* ===== Duplicate check ===== */
+export function checkSerialDuplicate(serialNumber, excludeId) {
+  const params = new URLSearchParams({ serialNumber });
+  if (excludeId) params.set('excludeId', excludeId);
+  return request(`/assets/check-duplicate?${params}`);
+}
+
 /* ===== Assets CRUD ===== */
 
 // Get assets — optional pagination + server-side search/filter.
