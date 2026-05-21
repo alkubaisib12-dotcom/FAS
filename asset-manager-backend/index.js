@@ -726,19 +726,36 @@ app.put('/assets/:id', (req, res) => {
 
   if (oldId !== newId) {
     db.serialize(() => {
-      db.run('BEGIN');
-      db.run(`DELETE FROM assets WHERE assetId = ?`, oldId, function (err) {
-        if (err) return rollback(err, res);
+      // Disable FK enforcement so we can migrate child records before deleting
+      // the parent row (otherwise ON DELETE CASCADE would wipe images/invoices).
+      db.run('PRAGMA foreign_keys = OFF');
+      db.run('BEGIN EXCLUSIVE');
+      // Migrate all child records to the new assetId BEFORE deleting the old row
+      db.run(`UPDATE asset_images   SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+      db.run(`UPDATE asset_invoices SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+      db.run(`DELETE FROM assets WHERE assetId = ?`, [oldId], function (err) {
+        if (err) {
+          db.run('ROLLBACK');
+          db.run('PRAGMA foreign_keys = ON');
+          return rollback(err, res);
+        }
         const sqlInsert = `INSERT INTO assets (${fields.join(',')}) VALUES (${placeholders})`;
         db.run(sqlInsert, Object.values(asset), function (err2) {
           if (err2) {
+            db.run('ROLLBACK');
+            db.run('PRAGMA foreign_keys = ON');
             const status = String(err2.code).includes('CONSTRAINT') ? 409 : 500;
             return rollback(err2, res, status);
           }
-          db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [asset.assetId], function (err3) {
-            if (err3) return rollback(err3, res);
+          db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [newId], function (err3) {
+            if (err3) {
+              db.run('ROLLBACK');
+              db.run('PRAGMA foreign_keys = ON');
+              return rollback(err3, res);
+            }
             db.run('COMMIT', () => {
-              logAudit(req, 'asset.updated', 'asset', asset.assetId, { previousId: oldId });
+              db.run('PRAGMA foreign_keys = ON');
+              logAudit(req, 'asset.updated', 'asset', newId, { previousId: oldId });
               res.json({ updated: 1 });
             });
           });
