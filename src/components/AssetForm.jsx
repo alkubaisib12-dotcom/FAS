@@ -605,9 +605,9 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
           {imagesLoading ? (
             <span style={{ color: '#6b7280', fontSize: 13, marginTop: 6, display: 'block' }}>Loading images…</span>
           ) : images.length > 0 ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
               {images.map((img, idx) => (
-                <div key={img.id ?? `img-${idx}`} style={imgThumbWrap}>
+                <div key={img.id ?? `img-${idx}`} style={{ ...imgThumbWrap, width: 100 }}>
                   <a href={resolveUrl(img.url)} target="_blank" rel="noopener noreferrer">
                     <img src={resolveUrl(img.url)} alt={`Asset image ${idx + 1}`} style={imgThumb} />
                   </a>
@@ -619,9 +619,15 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
                     disabled={!img.id}
                   >✕</button>
                   {img.uploadedAt && (
-                    <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'center', marginTop: 2 }}>
+                    <div style={{ fontSize: 10, color: '#9ca3af', textAlign: 'center', marginTop: 2 }}>
                       {img.uploadedAt.slice(0, 10)}
                     </div>
+                  )}
+                  {/* OCR extracted text — shown as expandable chip */}
+                  {img.ocrText ? (
+                    <OcrChip text={img.ocrText} />
+                  ) : (
+                    <div style={{ fontSize: 10, color: '#d1d5db', textAlign: 'center', marginTop: 2 }}>scanning…</div>
                   )}
                 </div>
               ))}
@@ -722,6 +728,33 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
         </button>
       </div>
     </form>
+  );
+}
+
+/* ── OCR chip: shows extracted text under a thumbnail ── */
+function OcrChip({ text }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const preview = text.length > 40 ? text.slice(0, 40) + '…' : text;
+  return (
+    <div
+      onClick={() => setExpanded(v => !v)}
+      title={expanded ? 'Click to collapse' : text}
+      style={{
+        marginTop: 3,
+        fontSize: 10,
+        color: '#374151',
+        background: '#f0fdf4',
+        border: '1px solid #bbf7d0',
+        borderRadius: 4,
+        padding: '2px 5px',
+        cursor: 'pointer',
+        wordBreak: 'break-all',
+        lineHeight: 1.4,
+        maxWidth: 100
+      }}
+    >
+      🔍 {expanded ? text : preview}
+    </div>
   );
 }
 

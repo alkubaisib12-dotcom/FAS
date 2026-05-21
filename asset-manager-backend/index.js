@@ -1,7 +1,7 @@
 // index.js — Express + SQLite + LDAP auth + sessions + protected routes
 // + token-gated fingerprints + MAC/IP normalization + duplicate-skip logic
 
-const path = require('path'); 
+const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
@@ -12,6 +12,31 @@ const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const ldap = require('ldapjs');
 const multer = require('multer');
+
+/* ── OCR (tesseract.js) — optional; degrades gracefully if not installed ── */
+let _tesseractCreateWorker = null;
+try {
+  _tesseractCreateWorker = require('tesseract.js').createWorker;
+} catch { /* OCR disabled */ }
+
+const TESSDATA_DIR = path.resolve(__dirname, 'tessdata');
+fs.mkdirSync(TESSDATA_DIR, { recursive: true });
+
+async function ocrImage(filePath) {
+  if (!_tesseractCreateWorker) return '';
+  try {
+    const worker = await _tesseractCreateWorker('eng', 1, {
+      cachePath: TESSDATA_DIR,
+      logger: () => {}
+    });
+    const { data: { text } } = await worker.recognize(filePath);
+    await worker.terminate();
+    return text.replace(/\s+/g, ' ').trim();
+  } catch (e) {
+    console.error('OCR error:', e.message);
+    return '';
+  }
+}
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -277,6 +302,14 @@ function ensureImagesTable(cb) {
         (e2) => cb(e2)
       );
     });
+  });
+}
+
+function ensureOcrColumn(cb) {
+  db.all(`PRAGMA table_info(asset_images)`, (err, cols) => {
+    if (err) return cb(err);
+    if (cols.some(c => c.name === 'ocrText')) return cb(null);
+    db.run(`ALTER TABLE asset_images ADD COLUMN ocrText TEXT`, cb);
   });
 }
 
@@ -564,8 +597,11 @@ app.get('/assets', (req, res) => {
     const cols = ['a.assetId','a.brandModel','a.serialNumber','a.assignedTo',
                   'a.department','a.assetType','a."group"','a.hostName',
                   'a.ipAddress','a.macAddress','a.remarks'];
-    whereParts.push(`(${cols.map(c => `${c} LIKE ?`).join(' OR ')})`);
+    // Also search OCR text extracted from uploaded images
+    const ocrSubq = `EXISTS (SELECT 1 FROM asset_images _img WHERE _img.assetId = a.assetId AND _img.ocrText LIKE ?)`;
+    whereParts.push(`(${cols.map(c => `${c} LIKE ?`).join(' OR ')} OR ${ocrSubq})`);
     cols.forEach(() => whereParams.push(`%${search}%`));
+    whereParams.push(`%${search}%`); // param for OCR subquery
   }
   if (groups.length) { whereParts.push(`a."group" IN (${groups.map(() => '?').join(',')})`);     whereParams.push(...groups); }
   if (types.length)  { whereParts.push(`a.assetType IN (${types.map(() => '?').join(',')})`);    whereParams.push(...types);  }
@@ -1321,7 +1357,20 @@ app.post('/assets/:assetId/image', uploadImageOnly.single('file'), (req, res) =>
     [assetId, imageUrl],
     function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ url: imageUrl, id: this.lastID });
+      const rowId = this.lastID;
+      res.json({ url: imageUrl, id: rowId, ocrText: null });
+
+      // Run OCR in background — does not block the upload response
+      const absPath = path.join(imagesDir, req.file.filename);
+      ocrImage(absPath).then(ocrText => {
+        if (ocrText) {
+          db.run(
+            `UPDATE asset_images SET ocrText = ? WHERE id = ?`,
+            [ocrText, rowId],
+            (e) => { if (e) console.error('OCR DB update error:', e.message); }
+          );
+        }
+      });
     }
   );
 });
@@ -1329,7 +1378,7 @@ app.post('/assets/:assetId/image', uploadImageOnly.single('file'), (req, res) =>
 app.get('/assets/:assetId/images', (req, res) => {
   const { assetId } = req.params;
   db.all(
-    `SELECT id, url, uploadedAt FROM asset_images WHERE assetId = ? ORDER BY uploadedAt ASC, id ASC`,
+    `SELECT id, url, uploadedAt, ocrText FROM asset_images WHERE assetId = ? ORDER BY uploadedAt ASC, id ASC`,
     [assetId],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
@@ -1399,8 +1448,19 @@ dedupeAndIndex((err) => {
                 console.error('Migration error (asset_images):', err7);
                 process.exit(1);
               }
-              app.listen(PORT, '0.0.0.0', () => {
-                console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+              ensureOcrColumn((err8) => {
+                if (err8) {
+                  console.error('Migration error (ocrText column):', err8);
+                  process.exit(1);
+                }
+                app.listen(PORT, '0.0.0.0', () => {
+                  console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+                  if (_tesseractCreateWorker) {
+                    console.log('🔍 OCR enabled (tesseract.js) — language data will download on first use');
+                  } else {
+                    console.log('⚠️  OCR disabled (tesseract.js not found)');
+                  }
+                });
               });
             });
           });

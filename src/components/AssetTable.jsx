@@ -163,7 +163,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
       <div style={{ marginBottom: '16px' }}>
         <input
           type="text"
-          placeholder="Search by Asset ID, Serial Number, Brand…"
+          placeholder="Search by Asset ID, Serial, Brand, or text in photos…"
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           style={{ padding: '6px', width: '300px' }}
