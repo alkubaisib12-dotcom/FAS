@@ -161,6 +161,26 @@ export async function uploadInvoice(assetId, file) {
   });
 }
 
+/* ===== Images API ===== */
+export async function uploadImage(assetId, file) {
+  if (!assetId) throw new Error('assetId is required to upload an image');
+  if (!(file instanceof File)) throw new Error('file must be a File');
+  const fd = new FormData();
+  fd.append('file', file);
+  const encoded = encodeURIComponent(assetId);
+  return request(`/assets/${encoded}/image`, { method: 'POST', body: fd });
+}
+
+export async function getImages(assetId) {
+  const encoded = encodeURIComponent(assetId);
+  return request(`/assets/${encoded}/images`, { method: 'GET' });
+}
+
+export async function deleteImage(assetId, imageId) {
+  const encoded = encodeURIComponent(assetId);
+  return request(`/assets/${encoded}/images/${imageId}?confirm=true`, { method: 'DELETE' });
+}
+
 /* ===== Consumables API ===== */
 // Get all consumables
 export async function getAllConsumables() {

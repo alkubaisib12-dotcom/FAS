@@ -260,6 +260,26 @@ function ensureInvoicesTable(cb) {
   });
 }
 
+function ensureImagesTable(cb) {
+  db.serialize(() => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS asset_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        assetId TEXT NOT NULL,
+        url TEXT NOT NULL,
+        uploadedAt TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (assetId) REFERENCES assets(assetId) ON DELETE CASCADE
+      )
+    `, (e1) => {
+      if (e1) return cb(e1);
+      db.run(
+        `CREATE INDEX IF NOT EXISTS idx_asset_images_assetId ON asset_images(assetId)`,
+        (e2) => cb(e2)
+      );
+    });
+  });
+}
+
 function ensureAuditLogTable(cb) {
   db.run(`
     CREATE TABLE IF NOT EXISTS audit_log (
@@ -1254,6 +1274,73 @@ app.get('/assets/check-duplicate', (req, res) => {
   });
 });
 
+/* -------------------------- Images upload API -------------------------- */
+const imagesDir = path.resolve(__dirname, 'uploads', 'images');
+fs.mkdirSync(imagesDir, { recursive: true });
+
+const imageStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, imagesDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `${req.params.assetId}-${Date.now()}${ext}`);
+  }
+});
+
+const uploadImageOnly = multer({
+  storage: imageStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//.test(file.mimetype)) return cb(null, true);
+    cb(new Error('Only image files are allowed'));
+  }
+});
+
+app.post('/assets/:assetId/image', uploadImageOnly.single('file'), (req, res) => {
+  const { assetId } = req.params;
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const imageUrl = `/uploads/images/${req.file.filename}`;
+  db.run(
+    `INSERT INTO asset_images (assetId, url) VALUES (?, ?)`,
+    [assetId, imageUrl],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ url: imageUrl, id: this.lastID });
+    }
+  );
+});
+
+app.get('/assets/:assetId/images', (req, res) => {
+  const { assetId } = req.params;
+  db.all(
+    `SELECT id, url, uploadedAt FROM asset_images WHERE assetId = ? ORDER BY uploadedAt ASC, id ASC`,
+    [assetId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ images: rows || [] });
+    }
+  );
+});
+
+app.delete('/assets/:assetId/images/:imageId', (req, res) => {
+  const { assetId, imageId } = req.params;
+  if (req.query.confirm !== 'true') return res.status(400).json({ error: 'confirm=true required' });
+  db.get(
+    `SELECT url FROM asset_images WHERE id = ? AND assetId = ?`,
+    [imageId, assetId],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!row) return res.status(404).json({ error: 'Image not found' });
+      const filename = path.basename(row.url);
+      const absPath  = path.join(imagesDir, filename);
+      db.run(`DELETE FROM asset_images WHERE id = ? AND assetId = ?`, [imageId, assetId], (err2) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+        fs.unlink(absPath, () => {});
+        res.json({ deleted: true });
+      });
+    }
+  );
+});
+
 /* --------- SPA catch-all: authenticated users navigating directly to a route --- */
 if (fs.existsSync(BUILD_DIR)) {
   app.get(/.*/, (req, res) => res.sendFile(path.join(BUILD_DIR, 'index.html')));
@@ -1290,8 +1377,14 @@ dedupeAndIndex((err) => {
               console.error('Migration error (audit_log):', err6);
               process.exit(1);
             }
-            app.listen(PORT, '0.0.0.0', () => {
-              console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+            ensureImagesTable((err7) => {
+              if (err7) {
+                console.error('Migration error (asset_images):', err7);
+                process.exit(1);
+              }
+              app.listen(PORT, '0.0.0.0', () => {
+                console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+              });
             });
           });
         });

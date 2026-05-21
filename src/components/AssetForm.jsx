@@ -5,6 +5,9 @@ import {
   getNextAssetId,
   uploadInvoice,
   checkSerialDuplicate,
+  uploadImage,
+  getImages,
+  deleteImage,
 } from '../utils/api';
 import { groups } from '../data/groups';
 import { categories } from '../data/categories';
@@ -26,6 +29,14 @@ export default function AssetForm({ onSave, editData }) {
   const [invoices, setInvoices] = useState([]);            // [{id, url, uploadedAt}]
   const [invoicesLoading, setInvoicesLoading] = useState(false);
   const [invoiceActionError, setInvoiceActionError] = useState('');
+
+  // --- Images ---
+  const [imageFiles, setImageFiles]           = useState([]);   // File[] selected but not yet uploaded
+  const [imageUploading, setImageUploading]   = useState(false);
+  const [imageErrors, setImageErrors]         = useState([]);
+  const [images, setImages]                   = useState([]);   // [{id,url,uploadedAt}] from backend
+  const [imagesLoading, setImagesLoading]     = useState(false);
+  const [imageActionError, setImageActionError] = useState('');
 
   const STATUS_OPTIONS = ['Active', 'Not active', 'Retired', 'Suspended'];
 
@@ -133,10 +144,11 @@ const [otherDepartment, setOtherDepartment] = useState('');
     }
   }, [editData, isEdit]);
 
-  // Load invoices from backend whenever assetId is available
+  // Load invoices + images from backend whenever assetId is available
   useEffect(() => {
     if (!formData?.assetId) return;
     loadInvoices(formData.assetId);
+    loadImages(formData.assetId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formData?.assetId]);
 
@@ -164,6 +176,32 @@ const [otherDepartment, setOtherDepartment] = useState('');
       setInvoices([]);
     } finally {
       setInvoicesLoading(false);
+    }
+  };
+
+  const loadImages = async (assetId) => {
+    setImagesLoading(true);
+    setImageActionError('');
+    try {
+      const data = await getImages(assetId);
+      setImages(Array.isArray(data?.images) ? data.images : []);
+    } catch (e) {
+      setImageActionError(e.message || 'Error loading images');
+      setImages([]);
+    } finally {
+      setImagesLoading(false);
+    }
+  };
+
+  const handleDeleteImage = async (img) => {
+    if (!formData?.assetId || !img?.id) return;
+    if (!window.confirm('Delete this image permanently?')) return;
+    setImageActionError('');
+    try {
+      await deleteImage(formData.assetId, img.id);
+      await loadImages(formData.assetId);
+    } catch (e) {
+      setImageActionError(e.message || 'Error deleting image');
     }
   };
 
@@ -374,6 +412,18 @@ department: formData.department === DEPT_OTHER ? otherDepartment.trim() : formDa
         }
       }
 
+      // Upload selected images
+      if (imageFiles.length > 0 && effectiveId) {
+        setImageUploading(true);
+        try {
+          await Promise.all(imageFiles.map((f) => uploadImage(effectiveId, f)));
+          await loadImages(effectiveId);
+          setImageFiles([]);
+        } finally {
+          setImageUploading(false);
+        }
+      }
+
       alert(isEdit ? 'Asset updated' : 'Asset added');
       if (onSave) onSave();
     } catch (err) {
@@ -496,6 +546,92 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
       <fieldset style={fieldsetStyle}>
         <legend style={legendStyle}>{essentialSection.title}</legend>
         {essentialSection.fields.map((field) => renderField(field))}
+
+        {/* ---- Asset Images ---- */}
+        <div style={fieldRow}>
+          <label style={labelStyle}>Photos / Images</label>
+
+          {/* File picker — on iOS shows: Take Photo / Photo Library / Browse */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label style={imgPickerBtnStyle}>
+              📷 Take Photo / Choose Image
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || []);
+                  const errs = [];
+                  const valid = [];
+                  files.forEach((f) => {
+                    if (f.size > 10 * 1024 * 1024) { errs.push(`${f.name}: too large (max 10 MB)`); return; }
+                    valid.push(f);
+                  });
+                  setImageErrors(errs);
+                  setImageFiles((prev) => [...prev, ...valid]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+            {imageUploading && <span style={{ color: '#6b7280', fontSize: 13 }}>Uploading…</span>}
+          </div>
+
+          {imageErrors.length > 0 && (
+            <div style={{ color: '#dc2626', fontSize: 13, marginTop: 4 }}>{imageErrors.join(' • ')}</div>
+          )}
+
+          {/* Previews of selected-but-not-yet-uploaded files */}
+          {imageFiles.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {imageFiles.map((f, i) => (
+                <div key={i} style={imgThumbWrap}>
+                  <img src={URL.createObjectURL(f)} alt={f.name} style={imgThumb} />
+                  <button
+                    type="button"
+                    onClick={() => setImageFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                    style={imgDeleteBtn}
+                    aria-label="Remove"
+                  >✕</button>
+                  <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'center', marginTop: 2 }}>
+                    {Math.ceil(f.size / 1024)} KB
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Uploaded images from backend */}
+          {imagesLoading ? (
+            <span style={{ color: '#6b7280', fontSize: 13, marginTop: 6, display: 'block' }}>Loading images…</span>
+          ) : images.length > 0 ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {images.map((img, idx) => (
+                <div key={img.id ?? `img-${idx}`} style={imgThumbWrap}>
+                  <a href={resolveUrl(img.url)} target="_blank" rel="noopener noreferrer">
+                    <img src={resolveUrl(img.url)} alt={`Asset image ${idx + 1}`} style={imgThumb} />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteImage(img)}
+                    style={imgDeleteBtn}
+                    aria-label="Delete image"
+                    disabled={!img.id}
+                  >✕</button>
+                  {img.uploadedAt && (
+                    <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'center', marginTop: 2 }}>
+                      {img.uploadedAt.slice(0, 10)}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {imageActionError && (
+            <div style={{ color: '#dc2626', fontSize: 13, marginTop: 4 }}>{imageActionError}</div>
+          )}
+        </div>
       </fieldset>
 
       {/* Toggle for advanced sections */}
@@ -666,4 +802,47 @@ const deleteBtnStyle = {
   border: 'none',
   borderRadius: '4px',
   cursor: 'pointer'
+};
+
+const imgPickerBtnStyle = {
+  display: 'inline-block',
+  padding: '10px 16px',
+  fontSize: '15px',
+  background: '#f0f0f0',
+  border: '1px solid #ccc',
+  borderRadius: '6px',
+  cursor: 'pointer'
+};
+
+const imgThumbWrap = {
+  position: 'relative',
+  width: 90,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center'
+};
+
+const imgThumb = {
+  width: 90,
+  height: 90,
+  objectFit: 'cover',
+  borderRadius: 6,
+  border: '1px solid #ddd'
+};
+
+const imgDeleteBtn = {
+  position: 'absolute',
+  top: 2,
+  right: 2,
+  background: 'rgba(0,0,0,0.55)',
+  color: '#fff',
+  border: 'none',
+  borderRadius: '50%',
+  width: 20,
+  height: 20,
+  fontSize: 11,
+  lineHeight: '20px',
+  textAlign: 'center',
+  cursor: 'pointer',
+  padding: 0
 };
