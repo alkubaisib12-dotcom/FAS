@@ -131,7 +131,7 @@ app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
 app.use(cookieParser());
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
 
 /* ------------------------------ SQLite ---------------------------------- */
 const dbPath = path.resolve(__dirname, 'assets.db');
@@ -553,7 +553,10 @@ app.post('/auth/login', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     req.session.user = { email: user.email, name: user.displayName };
-    res.json({ ok: true, user: req.session.user });
+    req.session.save((saveErr) => {
+      if (saveErr) return res.status(500).json({ error: 'Session save failed' });
+      res.json({ ok: true, user: req.session.user });
+    });
   } catch {
     res.status(401).json({ error: 'Invalid credentials' });
   }
