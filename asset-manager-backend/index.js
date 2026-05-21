@@ -549,7 +549,7 @@ if (fs.existsSync(BUILD_DIR)) {
 }
 
 /* --------------------------- Auth Guard (global) ------------------------- */
-const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/scan', '/uploads'];
+const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/scan', '/uploads', '/manageengine'];
 
 app.use((req, res, next) => {
   if (
@@ -999,6 +999,64 @@ app.delete('/assets/:assetId/invoices/:invoiceId', (req, res) => {
       });
     }
   );
+});
+
+/* ------------------------- ManageEngine Proxy API ------------------------ */
+app.post('/manageengine/fetch', async (req, res) => {
+  const { url, apiKey } = req.body || {};
+  if (!url || !apiKey) return res.status(400).json({ error: 'url and apiKey are required' });
+
+  const base = url.replace(/\/+$/, '');
+  const headers = { Authorization: apiKey, Accept: 'application/json' };
+
+  try {
+    // Step 1: fetch all computers
+    const compRes = await fetch(`${base}/api/1.3/inventory/computers`, { headers });
+    if (!compRes.ok) {
+      const txt = await compRes.text().catch(() => '');
+      return res.status(502).json({ error: `ManageEngine returned ${compRes.status}: ${txt.slice(0, 200)}` });
+    }
+    const compData = await compRes.json();
+    const computers = compData?.message_response?.computers || [];
+
+    if (computers.length === 0) return res.json({ devices: [] });
+
+    // Step 2: fetch hardware details for each computer (cap at 200 to avoid timeout)
+    const capped = computers.slice(0, 200);
+    const devices = await Promise.all(capped.map(async (comp) => {
+      let hw = {};
+      try {
+        const hwRes = await fetch(
+          `${base}/api/1.3/inventory/hardware?resourceId=${comp.resource_id}`,
+          { headers, signal: AbortSignal.timeout(8000) }
+        );
+        if (hwRes.ok) {
+          const hwData = await hwRes.json();
+          hw = hwData?.message_response?.hardware || {};
+        }
+      } catch { /* hardware detail optional — skip on timeout */ }
+
+      const osName = comp.os_name || hw.os_name || '';
+      return {
+        hostName:     comp.resource_name || '',
+        serialNumber: hw.serial_number  || '',
+        brandModel:   [hw.manufacturer, hw.model].filter(Boolean).join(' '),
+        assignedTo:   hw.last_loggedon_user || comp.last_contact_user || '',
+        department:   comp.department || '',
+        ipAddress:    comp.ip_address  || '',
+        macAddress:   hw.mac_address   || '',
+        osFirmware:   osName,
+        cpu:          hw.processor_type || hw.cpu_type || '',
+        ram:          hw.total_ram  ? `${hw.total_ram} MB`  : '',
+        storage:      hw.total_harddisk ? `${hw.total_harddisk} GB` : '',
+        status:       'Active',
+      };
+    }));
+
+    res.json({ devices, total: computers.length, fetched: capped.length });
+  } catch (e) {
+    res.status(502).json({ error: `Could not reach ManageEngine: ${e.message}` });
+  }
 });
 
 /* ----------------------------- Consumables API --------------------------- */

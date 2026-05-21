@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import AssetTable from './components/AssetTable';
 import AssetForm from './components/AssetForm';
 import ScanModal from './components/ScanModal';
+import ManageEngineModal from './components/ManageEngineModal';
 import Dashboard from './components/Dashboard';
 import ConsumablesView from './components/ConsumablesView';
 import { authMe, login, logout } from './utils/api';
@@ -58,6 +59,7 @@ function App() {
   const [refresh, setRefresh] = useState(Date.now());
   const [view, setView] = useState('table'); // 'table' | 'form' | 'dashboard' | 'consumables'
   const [scanOpen, setScanOpen] = useState(false);
+  const [meOpen, setMeOpen] = useState(false);
   const [editData, setEditData] = useState(null);
 
   // inline edit coordination with table
@@ -173,6 +175,7 @@ function App() {
             </div>
             <div className="toolbar-right">
               <button className="btn" onClick={() => setScanOpen(true)}>Scan Network</button>
+              <button className="btn" onClick={() => setMeOpen(true)}>Import ManageEngine</button>
               <button className="btn" onClick={goToDashboard}>Dashboard</button>
               <button
                 className="btn"
@@ -200,6 +203,12 @@ function App() {
             isOpen={scanOpen}
             onClose={() => setScanOpen(false)}
             onImported={handleImportedFromScan}
+          />
+
+          <ManageEngineModal
+            isOpen={meOpen}
+            onClose={() => setMeOpen(false)}
+            onImported={() => { setMeOpen(false); setRefresh(Date.now()); }}
           />
         </>
       )}
