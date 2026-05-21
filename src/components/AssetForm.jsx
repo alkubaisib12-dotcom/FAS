@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   addAsset,
   updateAsset,
   getNextAssetId,
   uploadInvoice,
+  checkSerialDuplicate,
 } from '../utils/api';
 import { groups } from '../data/groups';
 import { categories } from '../data/categories';
@@ -27,6 +28,10 @@ export default function AssetForm({ onSave, editData }) {
   const [invoiceActionError, setInvoiceActionError] = useState('');
 
   const STATUS_OPTIONS = ['Active', 'Not active', 'Retired', 'Suspended'];
+
+  const [showAdvanced, setShowAdvanced]     = useState(false);
+  const [serialDuplicate, setSerialDuplicate] = useState(null); // null | { assetId }
+  const serialCheckTimer = useRef(null);
 
   // extra fields for "Other"
   const [otherGroup, setOtherGroup] = useState('');
@@ -250,14 +255,15 @@ if (name === 'department') {
     }
   };
 
-  const sections = [
-    {
-      title: 'Basic Info',
-      fields: ['assetId', 'group', 'assetType', 'brand', 'model', 'serialNumber', 'hostName', 'assignedTo','department']
-    },
+  const essentialSection = {
+    title: 'Essential Info',
+    fields: ['assetId', 'group', 'assetType', 'brand', 'model', 'serialNumber', 'assignedTo', 'department', 'status']
+  };
+
+  const advancedSections = [
     {
       title: 'Technical Details',
-      fields: ['ipAddress', 'macAddress', 'osFirmware', 'cpu', 'ram', 'storage', 'portDetails', 'powerConsumption']
+      fields: ['hostName', 'ipAddress', 'macAddress', 'osFirmware', 'cpu', 'ram', 'storage', 'portDetails', 'powerConsumption']
     },
     {
       title: 'Lifecycle Info',
@@ -268,8 +274,8 @@ if (name === 'department') {
       fields: ['cost', 'depreciation', 'residualValue']
     },
     {
-      title: 'Status & Usage',
-      fields: ['status', 'condition', 'usagePurpose', 'accessLevel']
+      title: 'Condition & Usage',
+      fields: ['condition', 'usagePurpose', 'accessLevel']
     },
     {
       title: 'Compliance & Documentation',
@@ -280,6 +286,18 @@ if (name === 'department') {
       fields: ['remarks', 'lastAuditDate', 'disposedDate', 'replacementPlan']
     }
   ];
+
+  const checkSerial = (value) => {
+    clearTimeout(serialCheckTimer.current);
+    setSerialDuplicate(null);
+    if (!value || value.trim().length < 3) return;
+    serialCheckTimer.current = setTimeout(async () => {
+      try {
+        const result = await checkSerialDuplicate(value.trim(), isEdit ? originalId : undefined);
+        setSerialDuplicate(result.exists ? result : null);
+      } catch { /* ignore */ }
+    }, 500);
+  };
 
   const numericFields = ['ram', 'storage', 'powerConsumption', 'cost', 'depreciation', 'residualValue'];
 
@@ -379,239 +397,170 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
     (mustHaveGroupText && !otherGroup.trim()) ||
     (mustHaveTypeText && !otherAssetType.trim()) ||
     (mustHaveDepartmentText && !otherDepartment.trim());
+  const renderField = (field) => {
+    const isDate     = field.toLowerCase().includes('date');
+    const isTextArea = ['remarks', 'documentation'].includes(field);
+    const isGroup      = field === 'group';
+    const isStatus     = field === 'status';
+    const isDepartment = field === 'department';
+    const isAssetType  = field === 'assetType';
+    const isAssetId    = field === 'assetId';
+    const isSerial     = field === 'serialNumber';
+    const isNumeric    = numericFields.includes(field);
+    const label = humanize(field);
+
+    return (
+      <div key={field} style={fieldRow}>
+        <label style={labelStyle}>
+          {label}{['assetId', 'group', 'assetType'].includes(field) ? ' *' : ''}:
+        </label>
+
+        {isGroup ? (
+          <>
+            <select name="group" value={formData.group} onChange={handleChange} style={inputStyle} required>
+              <option value="">Select</option>
+              {groups.map((g) => <option key={g} value={g}>{g}</option>)}
+              <option value="Other">Other</option>
+            </select>
+            {mustHaveGroupText && (
+              <input type="text" value={otherGroup} onChange={handleOtherGroupChange}
+                placeholder="Enter custom group" style={{ ...inputStyle, marginTop: 6 }} required />
+            )}
+          </>
+        ) : isDepartment ? (
+          <>
+            <select name="department" value={formData.department || ''} onChange={handleChange} style={inputStyle}>
+              <option value="">Select</option>
+              {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+              {!departments.includes(DEPT_OTHER) && <option value={DEPT_OTHER}>{DEPT_OTHER} (Other)</option>}
+            </select>
+            {formData.department === DEPT_OTHER && (
+              <input type="text" value={otherDepartment} onChange={handleOtherDepartmentChange}
+                placeholder="أدخل قسماً مخصصاً" style={{ ...inputStyle, marginTop: 6 }} required />
+            )}
+          </>
+        ) : isAssetType ? (
+          <>
+            <select name="assetType" value={formData.assetType} onChange={handleChange} style={inputStyle} required>
+              <option value="">Select</option>
+              {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+              <option value="Other">Other</option>
+            </select>
+            {mustHaveTypeText && (
+              <input type="text" value={otherAssetType} onChange={handleOtherAssetTypeChange}
+                placeholder="Enter custom asset type" style={{ ...inputStyle, marginTop: 6 }} required />
+            )}
+          </>
+        ) : isTextArea ? (
+          <textarea name={field} value={formData[field]} onChange={handleChange} rows="3" style={inputStyle} />
+        ) : isAssetId ? (
+          <input
+            type="text" name={field} value={formData[field]} onChange={handleChange}
+            style={{ ...inputStyle, backgroundColor: isAssetIdReadOnly ? '#f0f0f0' : '#fff', color: isAssetIdReadOnly ? '#555' : '#000' }}
+            readOnly={isAssetIdReadOnly} required
+            placeholder={!formData.assetId ? (formData.assetType === 'Other' ? 'Type custom asset type to generate ID' : 'Select Asset Type to generate ID') : undefined}
+          />
+        ) : isStatus ? (
+          <select name="status" value={formData.status || ''} onChange={handleChange} style={inputStyle}>
+            <option value="">Select</option>
+            {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ) : isSerial ? (
+          <>
+            <input
+              type="text" name={field} value={formData[field]}
+              onChange={(e) => { handleChange(e); checkSerial(e.target.value); }}
+              style={inputStyle}
+            />
+            {serialDuplicate && (
+              <div style={{ color: '#dc2626', fontSize: '13px', marginTop: 4 }}>
+                ⚠ Serial already used by <strong>{serialDuplicate.assetId}</strong>
+              </div>
+            )}
+          </>
+        ) : (
+          <input
+            type={isDate ? 'date' : isNumeric ? 'number' : 'text'}
+            name={field} value={formData[field]} onChange={handleChange} style={inputStyle}
+          />
+        )}
+      </div>
+    );
+  };
+
   return (
     <form onSubmit={handleSubmit} style={formContainer}>
       <h2 style={formHeader}>{isEdit ? 'Edit Asset' : 'Add New Asset'}</h2>
 
-      {sections.map((section) => (
+      {/* Essential fields — always visible */}
+      <fieldset style={fieldsetStyle}>
+        <legend style={legendStyle}>{essentialSection.title}</legend>
+        {essentialSection.fields.map((field) => renderField(field))}
+      </fieldset>
+
+      {/* Toggle for advanced sections */}
+      <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+        <button type="button" onClick={() => setShowAdvanced(v => !v)} style={toggleBtnStyle}>
+          {showAdvanced ? 'Hide Details ▴' : 'More Details ▾'}
+        </button>
+      </div>
+
+      {/* Advanced sections — hidden until toggled */}
+      {showAdvanced && advancedSections.map((section) => (
         <fieldset key={section.title} style={fieldsetStyle}>
           <legend style={legendStyle}>{section.title}</legend>
-          {section.fields.map((field) => {
-            const isDate = field.toLowerCase().includes('date');
-            const isTextArea = ['remarks', 'documentation'].includes(field);
-            const isGroup = field === 'group';
-            const isStatus = field === 'status';
-const isDepartment = field === 'department';
-            const isAssetType = field === 'assetType';
-            const isAssetId = field === 'assetId';
-            const isNumeric = numericFields.includes(field);
-
-            const label = humanize(field);
-
-            return (
-              <div key={field} style={fieldRow}>
-                <label style={labelStyle}>
-                  {label}{['assetId', 'group', 'assetType'].includes(field) ? ' *' : ''}:
-                </label>
-
-                {isGroup ? (
-                  <>
-                    <select
-                      name="group"
-                      value={formData.group}
-                      onChange={handleChange}
-                      style={inputStyle}
-                      required
-                    >
-                      <option value="">Select</option>
-                      {groups.map((g) => (
-                        <option key={g} value={g}>{g}</option>
-                      ))}
-                      <option value="Other">Other</option>
-                    </select>
-                    {mustHaveGroupText && (
-                      <input
-                        type="text"
-                        value={otherGroup}
-                        onChange={handleOtherGroupChange}
-                        placeholder="Enter custom group"
-                        style={{ ...inputStyle, marginTop: 6 }}
-                        required
-                      />
-                    )}
-                  </>
-) : isDepartment ? (
-  <>
-    <select
-      name="department"
-      value={formData.department || ''}
-      onChange={handleChange}
-      style={inputStyle}
-    >
-      <option value="">Select</option>
-      {departments.map((d) => (
-        <option key={d} value={d}>{d}</option>
-      ))}
-      {!departments.includes(DEPT_OTHER) && (
-  <option value={DEPT_OTHER}>{DEPT_OTHER} (Other)</option>
-)}
-    </select>
-{formData.department === DEPT_OTHER && (      
-      <input
-        type="text"
-        value={otherDepartment}
-        onChange={handleOtherDepartmentChange}
-        placeholder="أدخل قسماً مخصصاً"
-        style={{ ...inputStyle, marginTop: 6 }}
-        required
-      />
-    )}
-  </>
-                ) : isAssetType ? (
-                  <>
-                    <select
-                      name="assetType"
-                      value={formData.assetType}
-                      onChange={handleChange}
-                      style={inputStyle}
-                      required
-                    >
-                      <option value="">Select</option>
-                      {categories.map((c) => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                      <option value="Other">Other</option>
-                    </select>
-                    {mustHaveTypeText && (
-                      <input
-                        type="text"
-                        value={otherAssetType}
-                        onChange={handleOtherAssetTypeChange}
-                        placeholder="Enter custom asset type"
-                        style={{ ...inputStyle, marginTop: 6 }}
-                        required
-                      />
-                    )}
-                  </>
-                ) : isTextArea ? (
-                  <textarea
-                    name={field}
-                    value={formData[field]}
-                    onChange={handleChange}
-                    rows="3"
-                    style={inputStyle}
-                  />
-                ) : isAssetId ? (
-                  // Read-only visual with gray bg; store value as read-only input
-                  <input
-                    type="text"
-                    name={field}
-                    value={formData[field]}
-                    onChange={handleChange}
-                    style={{
-                      ...inputStyle,
-                      backgroundColor: isAssetIdReadOnly ? '#f0f0f0' : '#fff',
-                      color: isAssetIdReadOnly ? '#555' : '#000'
-                    }}
-                    readOnly={isAssetIdReadOnly}
-                    required
-                    placeholder={
-                      !formData.assetId
-                        ? (formData.assetType === 'Other'
-                            ? 'Type custom asset type to generate ID'
-                            : 'Select Asset Type to generate ID')
-                        : undefined
-                    }
-                  />
-                ) : isStatus ? (
-                  <select
-                    name="status"
-                    value={formData.status || ''}
-                    onChange={handleChange}
-                    style={inputStyle}
-                  >
-                    <option value="">Select</option>
-                    {STATUS_OPTIONS.map((s) => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type={isDate ? 'date' : isNumeric ? 'number' : 'text'}
-                    name={field}
-                    value={formData[field]}
-                    onChange={handleChange}
-                    style={inputStyle}
-                  />
-                )}
-              </div>
-            );
-          })}
+          {section.fields.map((field) => renderField(field))}
 
           {section.title === 'Compliance & Documentation' && (
             <div style={fieldRow}>
               <label style={labelStyle}>Invoices (PDF, multiple)</label>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input
-                  type="file"
-                  accept="application/pdf"
-                  multiple
+                  type="file" accept="application/pdf" multiple
                   onChange={(e) => {
                     const files = Array.from(e.target.files || []);
                     const errors = [];
                     const valid = [];
-
                     files.forEach((f) => {
-                      if (f.size > 10 * 1024 * 1024) {
-                        errors.push(`${f.name}: too large (max 10 MB)`);
-                        return;
-                      }
+                      if (f.size > 10 * 1024 * 1024) { errors.push(`${f.name}: too large (max 10 MB)`); return; }
                       valid.push(f);
                     });
-
                     setInvoiceErrors(errors);
                     setInvoiceFiles(valid);
                   }}
                   style={inputStyle}
                 />
                 {invoiceUploading && <span style={{ color: '#6b7280' }}>Uploading…</span>}
-                {invoiceErrors.length > 0 && (
-                  <span style={{ color: '#dc2626' }}>{invoiceErrors.join(' • ')}</span>
-                )}
+                {invoiceErrors.length > 0 && <span style={{ color: '#dc2626' }}>{invoiceErrors.join(' • ')}</span>}
               </div>
 
-              {/* Show selected (not yet uploaded) files */}
               {invoiceFiles.length > 0 && (
                 <ul style={{ marginTop: 6, paddingLeft: 18 }}>
                   {invoiceFiles.map((f, i) => (
                     <li key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span>{f.name} ({Math.ceil(f.size / 1024)} KB)</span>
-                      <button
-                        type="button"
+                      <button type="button"
                         onClick={() => setInvoiceFiles(prev => prev.filter((_, idx) => idx !== i))}
                         style={{ border: 'none', background: '#eee', padding: '2px 6px', borderRadius: 4, cursor: 'pointer' }}
-                        aria-label={`Remove ${f.name}`}
-                      >
-                        × Remove
-                      </button>
+                        aria-label={`Remove ${f.name}`}>× Remove</button>
                     </li>
                   ))}
                 </ul>
               )}
 
-              {/* Existing invoices with Delete buttons */}
               <div style={{ marginTop: 6 }}>
                 {invoicesLoading ? (
                   <span style={{ color: '#6b7280' }}>Loading invoices…</span>
                 ) : invoices.length ? (
                   <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
                     {invoices.map((inv, idx) => (
-                      <li key={inv.id ?? `noid-${idx}`}
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                      <li key={inv.id ?? `noid-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
                         <a href={resolveUrl(inv.url)} target="_blank" rel="noopener noreferrer">Invoice {idx + 1}</a>
-                        {inv.uploadedAt ? (
-                          <small style={{ color: '#6b7280' }}>{inv.uploadedAt}</small>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteInvoice(inv)}
-                          style={deleteBtnStyle}
-                          aria-label="Delete invoice"
+                        {inv.uploadedAt ? <small style={{ color: '#6b7280' }}>{inv.uploadedAt}</small> : null}
+                        <button type="button" onClick={() => handleDeleteInvoice(inv)}
+                          style={deleteBtnStyle} aria-label="Delete invoice"
                           title={inv.id ? 'Delete invoice' : 'Delete not available (legacy)'}
-                          disabled={!inv.id}
-                        >
-                          Delete
-                        </button>
+                          disabled={!inv.id}>Delete</button>
                       </li>
                     ))}
                   </ul>
@@ -621,12 +570,9 @@ const isDepartment = field === 'department';
                 {invoiceActionError && <div style={{ color: '#dc2626', marginTop: 6 }}>{invoiceActionError}</div>}
               </div>
 
-              {/* Legacy single-link preview kept for backward compat */}
               {!invoicesLoading && !invoices.length && formData?.invoiceUrl ? (
                 <div style={{ marginTop: 6 }}>
-                  <a href={resolveUrl(formData.invoiceUrl)} target="_blank" rel="noopener noreferrer">
-                    View current invoice
-                  </a>
+                  <a href={resolveUrl(formData.invoiceUrl)} target="_blank" rel="noopener noreferrer">View current invoice</a>
                 </div>
               ) : null}
             </div>
@@ -635,11 +581,7 @@ const isDepartment = field === 'department';
       ))}
 
       <div style={{ textAlign: 'center' }}>
-        <button
-          type="submit"
-          style={{ ...submitButtonStyle, opacity: isSubmitDisabled ? 0.7 : 1 }}
-          disabled={isSubmitDisabled}
-        >
+        <button type="submit" style={{ ...submitButtonStyle, opacity: isSubmitDisabled ? 0.7 : 1 }} disabled={isSubmitDisabled}>
           {isEdit ? 'Update Asset' : 'Save Asset'}
         </button>
       </div>
@@ -689,10 +631,20 @@ const labelStyle = {
 };
 
 const inputStyle = {
-  padding: '8px',
-  fontSize: '14px',
+  padding: '10px',
+  fontSize: '16px', // 16px prevents iOS Safari auto-zoom on focus
   borderRadius: '4px',
   border: '1px solid #ccc'
+};
+
+const toggleBtnStyle = {
+  padding: '10px 24px',
+  fontSize: '15px',
+  background: '#f0f0f0',
+  color: '#333',
+  border: '1px solid #ccc',
+  borderRadius: '6px',
+  cursor: 'pointer'
 };
 
 const submitButtonStyle = {
