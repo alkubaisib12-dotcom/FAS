@@ -67,7 +67,7 @@ export function checkSerialDuplicate(serialNumber, excludeId) {
 // Get assets — optional pagination + server-side search/filter.
 // page=0 or omitted → returns all as flat array (backward compat / export).
 // page>0            → returns { items, total, page, pageSize }.
-export async function getAllAssets({ page, pageSize, search, group, assetType, department } = {}) {
+export async function getAllAssets({ page, pageSize, search, group, assetType, department, labeled } = {}) {
   const params = new URLSearchParams();
   if (page)                        params.set('page',       String(page));
   if (pageSize)                    params.set('pageSize',   String(pageSize));
@@ -75,6 +75,7 @@ export async function getAllAssets({ page, pageSize, search, group, assetType, d
   if (group?.length)               params.set('group',      group.join(','));
   if (assetType?.length)           params.set('assetType',  assetType.join(','));
   if (department?.length)          params.set('department', department.join(','));
+  if (labeled === true || labeled === false) params.set('labeled', labeled ? '1' : '0');
   const qs = params.toString();
   return request(`/assets${qs ? `?${qs}` : ''}`, { method: 'GET' });
 }
@@ -83,6 +84,22 @@ export async function getAllAssets({ page, pageSize, search, group, assetType, d
 // used to populate filter dropdowns regardless of which page is loaded.
 export async function getAssetFilterOptions() {
   return request('/assets/filter-options', { method: 'GET' });
+}
+
+/* ===== Asset labeling (physical tag tracking) ===== */
+// Mark/unmark an asset as physically labeled. This never touches assetId
+// (the tag value itself) or any other asset field.
+export async function setAssetLabeled(assetId, labeled) {
+  const encoded = encodeURIComponent(assetId);
+  return request(`/assets/${encoded}/labeled`, {
+    method: 'PATCH',
+    body: JSON.stringify({ labeled: !!labeled }),
+  });
+}
+
+// Overall labeling progress across all assets (not affected by search/filter).
+export async function getLabelStats() {
+  return request('/assets/label-stats', { method: 'GET' });
 }
 
 // Add new asset (expects assetId present, per current backend contract)

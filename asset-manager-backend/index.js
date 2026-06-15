@@ -309,6 +309,19 @@ function ensureHostNameColumn(cb) {
   });
 }
 
+// Safe migration to add labeled column if missing — tracks whether the
+// physical asset tag/sticker has been printed and applied to the device.
+// This is independent of assetId (the tag's printed value) and is never
+// involved in any assetId/tag rename or normalization logic.
+function ensureLabeledColumn(cb) {
+  db.all(`PRAGMA table_info(assets);`, [], (err, rows) => {
+    if (err) return cb(err);
+    const has = rows.some(r => String(r.name).toLowerCase() === 'labeled');
+    if (has) return cb();
+    db.run(`ALTER TABLE assets ADD COLUMN labeled INTEGER DEFAULT 0`, [], (err2) => cb(err2 || null));
+  });
+}
+
 // NEW: invoices table (1..N per asset)
 function ensureInvoicesTable(cb) {
   db.serialize(() => {
@@ -654,6 +667,10 @@ app.get('/assets', (req, res) => {
   if (groups.length) { whereParts.push(`a."group" IN (${groups.map(() => '?').join(',')})`);     whereParams.push(...groups); }
   if (types.length)  { whereParts.push(`a.assetType IN (${types.map(() => '?').join(',')})`);    whereParams.push(...types);  }
   if (depts.length)  { whereParts.push(`a.department IN (${depts.map(() => '?').join(',')})`);   whereParams.push(...depts);  }
+  if (req.query.labeled === '0' || req.query.labeled === '1') {
+    whereParts.push(`COALESCE(a.labeled, 0) = ?`);
+    whereParams.push(req.query.labeled === '1' ? 1 : 0);
+  }
 
   const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
 
@@ -855,38 +872,48 @@ app.put('/assets/:id', (req, res) => {
   const placeholders = fields.map(() => '?').join(',');
 
   if (oldId !== newId) {
-    db.serialize(() => {
-      // Disable FK enforcement so we can migrate child records before deleting
-      // the parent row (otherwise ON DELETE CASCADE would wipe images/invoices).
-      db.run('PRAGMA foreign_keys = OFF');
-      db.run('BEGIN EXCLUSIVE');
-      // Migrate all child records to the new assetId BEFORE deleting the old row
-      db.run(`UPDATE asset_images   SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
-      db.run(`UPDATE asset_invoices SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
-      db.run(`DELETE FROM assets WHERE assetId = ?`, [oldId], function (err) {
-        if (err) {
-          db.run('ROLLBACK');
-          db.run('PRAGMA foreign_keys = ON');
-          return rollback(err, res);
-        }
-        const sqlInsert = `INSERT INTO assets (${fields.join(',')}) VALUES (${placeholders})`;
-        db.run(sqlInsert, Object.values(asset), function (err2) {
-          if (err2) {
+    // Carry the existing "labeled" status over to the new row — it's
+    // unrelated to the assetId/tag value being changed and shouldn't be
+    // silently reset by the delete+reinsert below.
+    db.get(`SELECT labeled FROM assets WHERE assetId = ?`, [oldId], (errLabel, labelRow) => {
+      if (errLabel) return rollback(errLabel, res);
+      const labeledVal = labelRow ? (labelRow.labeled ?? 0) : 0;
+      const fieldsWithLabeled = [...fields, 'labeled'];
+      const placeholdersWithLabeled = fieldsWithLabeled.map(() => '?').join(',');
+
+      db.serialize(() => {
+        // Disable FK enforcement so we can migrate child records before deleting
+        // the parent row (otherwise ON DELETE CASCADE would wipe images/invoices).
+        db.run('PRAGMA foreign_keys = OFF');
+        db.run('BEGIN EXCLUSIVE');
+        // Migrate all child records to the new assetId BEFORE deleting the old row
+        db.run(`UPDATE asset_images   SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+        db.run(`UPDATE asset_invoices SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+        db.run(`DELETE FROM assets WHERE assetId = ?`, [oldId], function (err) {
+          if (err) {
             db.run('ROLLBACK');
             db.run('PRAGMA foreign_keys = ON');
-            const status = String(err2.code).includes('CONSTRAINT') ? 409 : 500;
-            return rollback(err2, res, status);
+            return rollback(err, res);
           }
-          db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [newId], function (err3) {
-            if (err3) {
+          const sqlInsert = `INSERT INTO assets (${fieldsWithLabeled.join(',')}) VALUES (${placeholdersWithLabeled})`;
+          db.run(sqlInsert, [...Object.values(asset), labeledVal], function (err2) {
+            if (err2) {
               db.run('ROLLBACK');
               db.run('PRAGMA foreign_keys = ON');
-              return rollback(err3, res);
+              const status = String(err2.code).includes('CONSTRAINT') ? 409 : 500;
+              return rollback(err2, res, status);
             }
-            db.run('COMMIT', () => {
-              db.run('PRAGMA foreign_keys = ON');
-              logAudit(req, 'asset.updated', 'asset', newId, { previousId: oldId });
-              res.json({ updated: 1 });
+            db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [newId], function (err3) {
+              if (err3) {
+                db.run('ROLLBACK');
+                db.run('PRAGMA foreign_keys = ON');
+                return rollback(err3, res);
+              }
+              db.run('COMMIT', () => {
+                db.run('PRAGMA foreign_keys = ON');
+                logAudit(req, 'asset.updated', 'asset', newId, { previousId: oldId });
+                res.json({ updated: 1 });
+              });
             });
           });
         });
@@ -905,6 +932,34 @@ app.put('/assets/:id', (req, res) => {
       res.json({ updated: this.changes });
     });
   }
+});
+
+// Mark/unmark an asset as physically labeled (tagged). This ONLY touches the
+// `labeled` flag — it never reads or writes assetId or any other field, so it
+// can never change an asset's tag.
+app.patch('/assets/:id/labeled', (req, res) => {
+  const id = req.params.id;
+  const labeled = req.body?.labeled ? 1 : 0;
+  db.run(`UPDATE assets SET labeled = ? WHERE assetId = ?`, [labeled, id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: 'Asset not found' });
+    logAudit(req, labeled ? 'asset.labeled' : 'asset.unlabeled', 'asset', id, {});
+    res.json({ assetId: id, labeled: !!labeled });
+  });
+});
+
+// Overall labeling progress (independent of any current search/filter).
+app.get('/assets/label-stats', (req, res) => {
+  db.get(
+    `SELECT COUNT(*) AS total, SUM(CASE WHEN COALESCE(labeled, 0) = 1 THEN 1 ELSE 0 END) AS labeled FROM assets`,
+    [],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const total = row?.total || 0;
+      const labeled = row?.labeled || 0;
+      res.json({ total, labeled, unlabeled: total - labeled });
+    }
+  );
 });
 
 app.delete('/assets/:id', (req, res) => {
@@ -1659,13 +1714,19 @@ dedupeAndIndex((err) => {
                   console.error('Migration error (ocrText column):', err8);
                   process.exit(1);
                 }
-                app.listen(PORT, '0.0.0.0', () => {
-                  console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
-                  if (_tesseractCreateWorker) {
-                    console.log('🔍 OCR enabled (tesseract.js) — language data will download on first use');
-                  } else {
-                    console.log('⚠️  OCR disabled (tesseract.js not found)');
+                ensureLabeledColumn((err9) => {
+                  if (err9) {
+                    console.error('Migration error (labeled column):', err9);
+                    process.exit(1);
                   }
+                  app.listen(PORT, '0.0.0.0', () => {
+                    console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+                    if (_tesseractCreateWorker) {
+                      console.log('🔍 OCR enabled (tesseract.js) — language data will download on first use');
+                    } else {
+                      console.log('⚠️  OCR disabled (tesseract.js not found)');
+                    }
+                  });
                 });
               });
             });

@@ -6,6 +6,7 @@ import ScanModal from './components/ScanModal';
 import ManageEngineModal from './components/ManageEngineModal';
 import Dashboard from './components/Dashboard';
 import ConsumablesView from './components/ConsumablesView';
+import LabelingView from './components/LabelingView';
 import { authMe, login, logout } from './utils/api';
 import './styles/app.css'; // <- all visual styles live here
 
@@ -57,7 +58,7 @@ function App() {
 
   /* -------- App view state -------- */
   const [refresh, setRefresh] = useState(Date.now());
-  const [view, setView] = useState('table'); // 'table' | 'form' | 'dashboard' | 'consumables'
+  const [view, setView] = useState('table'); // 'table' | 'form' | 'dashboard' | 'consumables' | 'labeling'
   const [scanOpen, setScanOpen] = useState(false);
   const [meOpen, setMeOpen] = useState(false);
   const [editData, setEditData] = useState(null);
@@ -71,6 +72,7 @@ function App() {
   const goToFormAdd = () => { setEditData(null); setView('form'); };
   const goToDashboard = () => setView('dashboard');
   const goToConsumables = () => setView('consumables');
+  const goToLabeling = () => setView('labeling');
 
   const triggerRefresh = () => {
     setRefresh(Date.now());
@@ -177,6 +179,7 @@ function App() {
               <button className="btn" onClick={() => setScanOpen(true)}>Scan Network</button>
               <button className="btn" onClick={() => setMeOpen(true)}>Import ManageEngine</button>
               <button className="btn" onClick={goToDashboard}>Dashboard</button>
+              <button className="btn" onClick={goToLabeling}>Asset Labeling</button>
               <button
                 className="btn"
                 onClick={goToConsumables}
@@ -254,6 +257,19 @@ function App() {
           </div>
 
           <ConsumablesView />
+        </>
+      )}
+
+      {view === 'labeling' && (
+        <>
+          <div className="toolbar">
+            <div className="toolbar-left">
+              <button className="btn" onClick={goToTable}>← Back to List</button>
+            </div>
+            <div className="toolbar-right" />
+          </div>
+
+          <LabelingView />
         </>
       )}
     </div>
