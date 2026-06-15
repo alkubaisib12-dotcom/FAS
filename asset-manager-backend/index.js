@@ -1,7 +1,7 @@
 // index.js — Express + SQLite + LDAP auth + sessions + protected routes
 // + token-gated fingerprints + MAC/IP normalization + duplicate-skip logic
 
-const path = require('path'); 
+const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
@@ -12,6 +12,31 @@ const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const ldap = require('ldapjs');
 const multer = require('multer');
+
+/* ── OCR (tesseract.js) — optional; degrades gracefully if not installed ── */
+let _tesseractCreateWorker = null;
+try {
+  _tesseractCreateWorker = require('tesseract.js').createWorker;
+} catch { /* OCR disabled */ }
+
+const TESSDATA_DIR = path.resolve(__dirname, 'tessdata');
+fs.mkdirSync(TESSDATA_DIR, { recursive: true });
+
+async function ocrImage(filePath) {
+  if (!_tesseractCreateWorker) return '';
+  try {
+    const worker = await _tesseractCreateWorker('eng', 1, {
+      cachePath: TESSDATA_DIR,
+      logger: () => {}
+    });
+    const { data: { text } } = await worker.recognize(filePath);
+    await worker.terminate();
+    return text.replace(/\s+/g, ' ').trim();
+  } catch (e) {
+    console.error('OCR error:', e.message);
+    return '';
+  }
+}
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -45,7 +70,8 @@ function isPrivateNetworkOrigin(origin) {
       /^192\.168\./.test(host) ||
       /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host) ||
       host === 'localhost' ||
-      host === '127.0.0.1'
+      host === '127.0.0.1' ||
+      !host.includes('.')   // single-label hostname = intranet (e.g. swdapp, server)
     );
   } catch {
     return false;
@@ -105,20 +131,7 @@ app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
 app.use(cookieParser());
-app.use(express.json());
-app.use(session({
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: 'lax',
-    // secure: true,
-  }
-}));
-
-// Static serving for uploads
-app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
+app.use(express.json({ limit: '20mb' }));
 
 /* ------------------------------ SQLite ---------------------------------- */
 const dbPath = path.resolve(__dirname, 'assets.db');
@@ -126,6 +139,64 @@ const db = new sqlite3.Database(dbPath);
 
 // Enable FK so ON DELETE CASCADE works
 db.run('PRAGMA foreign_keys = ON');
+
+/* ---- SQLite-backed session store (survives server restarts) ---- */
+class SQLiteSessionStore extends session.Store {
+  constructor(db) {
+    super();
+    this._db = db;
+    this._db.run(`CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      expires INTEGER NOT NULL
+    )`);
+    // Prune expired sessions every 15 minutes
+    setInterval(() => {
+      this._db.run('DELETE FROM sessions WHERE expires < ?', [Date.now()]);
+    }, 15 * 60 * 1000).unref();
+  }
+  get(sid, cb) {
+    this._db.get('SELECT data, expires FROM sessions WHERE sid = ?', [sid], (err, row) => {
+      if (err) return cb(err);
+      if (!row) return cb(null, null);
+      if (row.expires < Date.now()) {
+        this._db.run('DELETE FROM sessions WHERE sid = ?', [sid]);
+        return cb(null, null);
+      }
+      try { cb(null, JSON.parse(row.data)); } catch (e) { cb(e); }
+    });
+  }
+  set(sid, sess, cb) {
+    const maxAge = (sess.cookie && sess.cookie.maxAge) ? sess.cookie.maxAge : 7 * 24 * 60 * 60 * 1000;
+    const expires = Date.now() + maxAge;
+    const data = JSON.stringify(sess);
+    this._db.run(
+      'INSERT OR REPLACE INTO sessions (sid, data, expires) VALUES (?, ?, ?)',
+      [sid, data, expires],
+      cb || (() => {})
+    );
+  }
+  destroy(sid, cb) {
+    this._db.run('DELETE FROM sessions WHERE sid = ?', [sid], cb || (() => {}));
+  }
+  touch(sid, sess, cb) { this.set(sid, sess, cb); }
+}
+
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  store: new SQLiteSessionStore(db),
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days — survives browser close
+    // secure: true,
+  }
+}));
+
+// Static serving for uploads
+app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 
 db.run(`CREATE TABLE IF NOT EXISTS assets (
   assetId TEXT PRIMARY KEY,
@@ -257,6 +328,62 @@ function ensureInvoicesTable(cb) {
       );
     });
   });
+}
+
+function ensureImagesTable(cb) {
+  db.serialize(() => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS asset_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        assetId TEXT NOT NULL,
+        url TEXT NOT NULL,
+        uploadedAt TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (assetId) REFERENCES assets(assetId) ON DELETE CASCADE
+      )
+    `, (e1) => {
+      if (e1) return cb(e1);
+      db.run(
+        `CREATE INDEX IF NOT EXISTS idx_asset_images_assetId ON asset_images(assetId)`,
+        (e2) => cb(e2)
+      );
+    });
+  });
+}
+
+function ensureOcrColumn(cb) {
+  db.all(`PRAGMA table_info(asset_images)`, (err, cols) => {
+    if (err) return cb(err);
+    if (cols.some(c => c.name === 'ocrText')) return cb(null);
+    db.run(`ALTER TABLE asset_images ADD COLUMN ocrText TEXT`, cb);
+  });
+}
+
+function ensureAuditLogTable(cb) {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp   TEXT    NOT NULL DEFAULT (datetime('now')),
+      user_email  TEXT    NOT NULL,
+      action      TEXT    NOT NULL,
+      entity_type TEXT    NOT NULL,
+      entity_id   TEXT,
+      details_json TEXT,
+      ip_address  TEXT
+    )
+  `, cb);
+}
+
+/* ---- Audit helper (fire-and-forget, never blocks the response) ---- */
+function logAudit(req, action, entityType, entityId, details) {
+  const user = req.session?.user?.email || (hasScanToken(req) ? 'scanner' : 'anonymous');
+  const ip   = ((req.headers['x-forwarded-for'] || '') + ',' + (req.ip || ''))
+                 .split(',')[0].trim() || 'unknown';
+  db.run(
+    `INSERT INTO audit_log (user_email, action, entity_type, entity_id, details_json, ip_address)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [user, action, entityType, String(entityId ?? ''), JSON.stringify(details ?? {}), ip],
+    (err) => { if (err) console.error('Audit log error:', err.message); }
+  );
 }
 
 // Columns that actually exist on the `assets` table (include legacy invoiceUrl)
@@ -426,7 +553,10 @@ app.post('/auth/login', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     req.session.user = { email: user.email, name: user.displayName };
-    res.json({ ok: true, user: req.session.user });
+    req.session.save((saveErr) => {
+      if (saveErr) return res.status(500).json({ error: 'Session save failed' });
+      res.json({ ok: true, user: req.session.user });
+    });
   } catch {
     res.status(401).json({ error: 'Invalid credentials' });
   }
@@ -459,7 +589,16 @@ app.get('/assets/fingerprints', (req, res) => {
   });
 });
 
+/* --- Serve React static build files before the auth guard so the app shell
+     loads without a session (JS/CSS/index.html are always public).          --- */
+const BUILD_DIR = path.resolve(__dirname, '..', 'build');
+if (fs.existsSync(BUILD_DIR)) {
+  app.use(express.static(BUILD_DIR));
+}
+
 /* --------------------------- Auth Guard (global) ------------------------- */
+const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/scan', '/uploads', '/manageengine'];
+
 app.use((req, res, next) => {
   if (
     req.path.startsWith('/health') ||
@@ -476,31 +615,78 @@ app.use((req, res, next) => {
  (req.method === 'POST' && req.path === '/scan') ||
  (req.method === 'GET'  && req.path === '/scan/stream')  )) return next();
 
-  if (!req.session?.user) return res.status(401).json({ error: 'Auth required' });
+  if (!req.session?.user) {
+    const isApiCall = API_PREFIXES.some(p => req.path.startsWith(p));
+    if (isApiCall) return res.status(401).json({ error: 'Auth required' });
+    // Non-API path (SPA route): serve index.html so React handles auth
+    const idx = path.join(BUILD_DIR, 'index.html');
+    return fs.existsSync(idx)
+      ? res.sendFile(idx)
+      : res.status(401).json({ error: 'Auth required' });
+  }
   next();
 });
 
 /* ------------------------------ Assets API ------------------------------- */
-// include invoiceUrls[] (fallback to legacy invoiceUrl if present)
+// Supports optional server-side filtering + pagination.
+// page=0 (or omitted) → returns all rows as a flat array (backward compat / export).
+// page>0             → returns { items, total, page, pageSize }.
 app.get('/assets', (req, res) => {
-  const sql = `
-    SELECT a.*,
-           GROUP_CONCAT(ai.url, '||') AS __invoices
-    FROM assets a
-    LEFT JOIN asset_invoices ai ON ai.assetId = a.assetId
-    GROUP BY a.assetId
-    ORDER BY a.assetId
-  `;
-  db.all(sql, [], (err, rows) => {
+  const page     = parseInt(req.query.page) || 0;
+  const pageSize = Math.min(500, Math.max(1, parseInt(req.query.pageSize) || 100));
+  const search   = (req.query.search || '').trim();
+  const groups   = req.query.group       ? req.query.group.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const types    = req.query.assetType   ? req.query.assetType.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const depts    = req.query.department  ? req.query.department.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  const whereParts = [], whereParams = [];
+
+  if (search) {
+    const cols = ['a.assetId','a.brandModel','a.serialNumber','a.assignedTo',
+                  'a.department','a.assetType','a."group"','a.hostName',
+                  'a.ipAddress','a.macAddress','a.remarks'];
+    // Also search OCR text extracted from uploaded images
+    const ocrSubq = `EXISTS (SELECT 1 FROM asset_images _img WHERE _img.assetId = a.assetId AND _img.ocrText LIKE ?)`;
+    whereParts.push(`(${cols.map(c => `${c} LIKE ?`).join(' OR ')} OR ${ocrSubq})`);
+    cols.forEach(() => whereParams.push(`%${search}%`));
+    whereParams.push(`%${search}%`); // param for OCR subquery
+  }
+  if (groups.length) { whereParts.push(`a."group" IN (${groups.map(() => '?').join(',')})`);     whereParams.push(...groups); }
+  if (types.length)  { whereParts.push(`a.assetType IN (${types.map(() => '?').join(',')})`);    whereParams.push(...types);  }
+  if (depts.length)  { whereParts.push(`a.department IN (${depts.map(() => '?').join(',')})`);   whereParams.push(...depts);  }
+
+  const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+
+  db.get(`SELECT COUNT(*) AS total FROM assets a ${where}`, whereParams, (err, countRow) => {
     if (err) return res.status(500).json({ error: err.message });
-    const mapped = rows.map(r => {
-      const arr = r.__invoices
-        ? r.__invoices.split('||').filter(Boolean)
-        : (r.invoiceUrl ? [r.invoiceUrl] : []);
-      delete r.__invoices;
-      return { ...r, invoiceUrls: arr };
+
+    let sql = `
+      SELECT a.*,
+             GROUP_CONCAT(ai.url, '||') AS __invoices
+      FROM assets a
+      LEFT JOIN asset_invoices ai ON ai.assetId = a.assetId
+      ${where}
+      GROUP BY a.assetId
+      ORDER BY a.assetId
+    `;
+    const sqlParams = [...whereParams];
+    if (page > 0) { sql += ' LIMIT ? OFFSET ?'; sqlParams.push(pageSize, (page - 1) * pageSize); }
+
+    db.all(sql, sqlParams, (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const items = rows.map(r => {
+        const arr = r.__invoices
+          ? r.__invoices.split('||').filter(Boolean)
+          : (r.invoiceUrl ? [r.invoiceUrl] : []);
+        delete r.__invoices;
+        return { ...r, invoiceUrls: arr };
+      });
+      if (page > 0) {
+        res.json({ items, total: countRow.total, page, pageSize });
+      } else {
+        res.json(items);
+      }
     });
-    res.json(mapped);
   });
 });
 
@@ -536,11 +722,35 @@ app.post('/assets', (req, res) => {
       return res.status(200).json({ skipped: true, id: asset.assetId });
     }
     db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [asset.assetId]);
+    logAudit(req, 'asset.created', 'asset', asset.assetId, { assetType: asset.assetType, group: asset.group });
     res.status(201).json({ id: asset.assetId, inserted: true });
   });
 });
 
 // Bulk add — normalization + counts inserted vs skipped
+// Check which serial numbers already exist in the DB
+// Body: { serials: ['SN1', 'SN2', ...] }
+// Returns: { existing: { 'SN1': { assetId, hostName, assignedTo, assetType }, ... } }
+app.post('/assets/check-serials', (req, res) => {
+  const { serials } = req.body || {};
+  if (!Array.isArray(serials) || serials.length === 0) return res.json({ existing: {} });
+  const clean = [...new Set(serials.map(s => String(s).trim()).filter(Boolean))];
+  if (clean.length === 0) return res.json({ existing: {} });
+  const ph = clean.map(() => '?').join(',');
+  db.all(
+    `SELECT assetId, serialNumber, hostName, assignedTo, assetType, "group" FROM assets WHERE serialNumber IN (${ph})`,
+    clean,
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const existing = {};
+      for (const row of rows) {
+        if (row.serialNumber) existing[row.serialNumber] = row;
+      }
+      res.json({ existing });
+    }
+  );
+});
+
 app.post('/assets/bulk', (req, res) => {
   const list = req.body?.assets;
   if (!Array.isArray(list) || list.length === 0) return res.status(400).json({ error: 'No assets provided' });
@@ -623,18 +833,38 @@ app.put('/assets/:id', (req, res) => {
 
   if (oldId !== newId) {
     db.serialize(() => {
-      db.run('BEGIN');
-      db.run(`DELETE FROM assets WHERE assetId = ?`, oldId, function (err) {
-        if (err) return rollback(err, res);
+      // Disable FK enforcement so we can migrate child records before deleting
+      // the parent row (otherwise ON DELETE CASCADE would wipe images/invoices).
+      db.run('PRAGMA foreign_keys = OFF');
+      db.run('BEGIN EXCLUSIVE');
+      // Migrate all child records to the new assetId BEFORE deleting the old row
+      db.run(`UPDATE asset_images   SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+      db.run(`UPDATE asset_invoices SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+      db.run(`DELETE FROM assets WHERE assetId = ?`, [oldId], function (err) {
+        if (err) {
+          db.run('ROLLBACK');
+          db.run('PRAGMA foreign_keys = ON');
+          return rollback(err, res);
+        }
         const sqlInsert = `INSERT INTO assets (${fields.join(',')}) VALUES (${placeholders})`;
         db.run(sqlInsert, Object.values(asset), function (err2) {
           if (err2) {
+            db.run('ROLLBACK');
+            db.run('PRAGMA foreign_keys = ON');
             const status = String(err2.code).includes('CONSTRAINT') ? 409 : 500;
             return rollback(err2, res, status);
           }
-          db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [asset.assetId], function (err3) {
-            if (err3) return rollback(err3, res);
-            db.run('COMMIT', () => res.json({ updated: 1 }));
+          db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [newId], function (err3) {
+            if (err3) {
+              db.run('ROLLBACK');
+              db.run('PRAGMA foreign_keys = ON');
+              return rollback(err3, res);
+            }
+            db.run('COMMIT', () => {
+              db.run('PRAGMA foreign_keys = ON');
+              logAudit(req, 'asset.updated', 'asset', newId, { previousId: oldId });
+              res.json({ updated: 1 });
+            });
           });
         });
       });
@@ -648,6 +878,7 @@ app.put('/assets/:id', (req, res) => {
         const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
         return res.status(status).json({ error: err.message });
       }
+      logAudit(req, 'asset.updated', 'asset', oldId, {});
       res.json({ updated: this.changes });
     });
   }
@@ -656,6 +887,7 @@ app.put('/assets/:id', (req, res) => {
 app.delete('/assets/:id', (req, res) => {
   db.run(`DELETE FROM assets WHERE assetId = ?`, req.params.id, function (err) {
     if (err) return res.status(500).json({ error: err.message });
+    if (this.changes > 0) logAudit(req, 'asset.deleted', 'asset', req.params.id, {});
     res.json({ deleted: this.changes });
   });
 });
@@ -675,7 +907,7 @@ app.delete('/assets/force-delete', (req, res) => {
   });
 });
 
-// Public-read (scanner + UI) — next id
+// Public-read (scanner + UI) — next id (atomic: reserves the ID inside a transaction)
 app.get('/assets/next-id/:type', (req, res) => {
   const rawType = req.params.type;
   if (!rawType || rawType.length < 2) return res.status(400).json({ error: 'Invalid asset type' });
@@ -683,16 +915,79 @@ app.get('/assets/next-id/:type', (req, res) => {
   const safePrefix = rawType.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 3);
   if (!safePrefix) return res.status(400).json({ error: 'Invalid asset type prefix' });
 
-  db.all(`SELECT assetId FROM used_ids WHERE assetId LIKE '${safePrefix}-%'`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const numbers = rows
-      .map(row => {
-        const m = row.assetId.match(new RegExp(`^${safePrefix}-(\\d+)$`));
-        return m ? parseInt(m[1], 10) : null;
-      })
-      .filter(n => n !== null);
-    const next = numbers.length ? Math.max(...numbers) + 1 : 1;
-    res.json({ id: `${safePrefix}-${String(next).padStart(3, '0')}` });
+  db.serialize(() => {
+    db.run('BEGIN EXCLUSIVE', (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      db.all(`SELECT assetId FROM used_ids WHERE assetId LIKE ?`, [`${safePrefix}-%`], (err, rows) => {
+        if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+        const numbers = rows
+          .map(row => {
+            const m = row.assetId.match(new RegExp(`^${safePrefix}-(\\d+)$`));
+            return m ? parseInt(m[1], 10) : null;
+          })
+          .filter(n => n !== null);
+        const next = numbers.length ? Math.max(...numbers) + 1 : 1;
+        const id = `${safePrefix}-${String(next).padStart(3, '0')}`;
+        db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [id], (err) => {
+          if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+          db.run('COMMIT', () => res.json({ id }));
+        });
+      });
+    });
+  });
+});
+
+// Bulk ID generation — generates N IDs in ONE exclusive transaction (no parallel-request collisions).
+// Body: { types: ['Desktop / Laptop', 'Monitor', 'Laptop', ...] }
+// Returns: { ids: ['DES-001', 'MON-001', 'LAP-001', ...] }  — one id per type, same order.
+app.post('/assets/bulk-next-ids', (req, res) => {
+  const { types } = req.body || {};
+  if (!Array.isArray(types) || types.length === 0)
+    return res.status(400).json({ error: 'types array is required' });
+
+  db.serialize(() => {
+    db.run('BEGIN EXCLUSIVE', (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Read ALL currently reserved IDs once
+      db.all('SELECT assetId FROM used_ids', [], (err, rows) => {
+        if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+
+        // Build prefix → current-max counter from existing IDs
+        const counters = {};
+        for (const { assetId } of rows) {
+          const m = assetId.match(/^([A-Z]{1,4})-(\d+)$/);
+          if (m) counters[m[1]] = Math.max(counters[m[1]] || 0, parseInt(m[2], 10));
+        }
+
+        // Derive one new ID per requested type (incrementing the counter each time)
+        const newIds = types.map(type => {
+          const prefix = String(type || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 3);
+          if (!prefix) return null;
+          counters[prefix] = (counters[prefix] || 0) + 1;
+          return `${prefix}-${String(counters[prefix]).padStart(3, '0')}`;
+        });
+
+        const validIds = newIds.filter(Boolean);
+
+        // Insert all new IDs sequentially inside the same exclusive transaction
+        let i = 0;
+        const insertNext = () => {
+          if (i >= validIds.length) {
+            db.run('COMMIT', (err) => {
+              if (err) return res.status(500).json({ error: err.message });
+              res.json({ ids: newIds });
+            });
+            return;
+          }
+          db.run('INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)', [validIds[i++]], (err) => {
+            if (err) { db.run('ROLLBACK'); return res.status(500).json({ error: err.message }); }
+            insertNext();
+          });
+        };
+        insertNext();
+      });
+    });
   });
 });
 
@@ -829,6 +1124,64 @@ app.delete('/assets/:assetId/invoices/:invoiceId', (req, res) => {
       });
     }
   );
+});
+
+/* ------------------------- ManageEngine Proxy API ------------------------ */
+app.post('/manageengine/fetch', async (req, res) => {
+  const { url, apiKey } = req.body || {};
+  if (!url || !apiKey) return res.status(400).json({ error: 'url and apiKey are required' });
+
+  const base = url.replace(/\/+$/, '');
+  const headers = { Authorization: apiKey, Accept: 'application/json' };
+
+  try {
+    // Step 1: fetch all computers
+    const compRes = await fetch(`${base}/api/1.3/inventory/computers`, { headers });
+    if (!compRes.ok) {
+      const txt = await compRes.text().catch(() => '');
+      return res.status(502).json({ error: `ManageEngine returned ${compRes.status}: ${txt.slice(0, 200)}` });
+    }
+    const compData = await compRes.json();
+    const computers = compData?.message_response?.computers || [];
+
+    if (computers.length === 0) return res.json({ devices: [] });
+
+    // Step 2: fetch hardware details for each computer (cap at 200 to avoid timeout)
+    const capped = computers.slice(0, 200);
+    const devices = await Promise.all(capped.map(async (comp) => {
+      let hw = {};
+      try {
+        const hwRes = await fetch(
+          `${base}/api/1.3/inventory/hardware?resourceId=${comp.resource_id}`,
+          { headers, signal: AbortSignal.timeout(8000) }
+        );
+        if (hwRes.ok) {
+          const hwData = await hwRes.json();
+          hw = hwData?.message_response?.hardware || {};
+        }
+      } catch { /* hardware detail optional — skip on timeout */ }
+
+      const osName = comp.os_name || hw.os_name || '';
+      return {
+        hostName:     comp.resource_name || '',
+        serialNumber: hw.serial_number  || '',
+        brandModel:   [hw.manufacturer, hw.model].filter(Boolean).join(' '),
+        assignedTo:   hw.last_loggedon_user || comp.last_contact_user || '',
+        department:   comp.department || '',
+        ipAddress:    comp.ip_address  || '',
+        macAddress:   hw.mac_address   || '',
+        osFirmware:   osName,
+        cpu:          hw.processor_type || hw.cpu_type || '',
+        ram:          hw.total_ram  ? `${hw.total_ram} MB`  : '',
+        storage:      hw.total_harddisk ? `${hw.total_harddisk} GB` : '',
+        status:       'Active',
+      };
+    }));
+
+    res.json({ devices, total: computers.length, fetched: capped.length });
+  } catch (e) {
+    res.status(502).json({ error: `Could not reach ManageEngine: ${e.message}` });
+  }
 });
 
 /* ----------------------------- Consumables API --------------------------- */
@@ -1125,6 +1478,123 @@ app.get('/scan/stream', (req, res) => {
   });
 });
 
+/* ------------------------------ Audit Log API ----------------------------- */
+app.get('/audit-log', (req, res) => {
+  const limit      = Math.min(500, Math.max(1, parseInt(req.query.limit) || 100));
+  const entityType = req.query.entity_type || null;
+  const params     = entityType ? [entityType, limit] : [limit];
+  const where      = entityType ? `WHERE entity_type = ?` : '';
+  db.all(
+    `SELECT id, timestamp, user_email, action, entity_type, entity_id, details_json, ip_address
+     FROM audit_log ${where} ORDER BY id DESC LIMIT ?`,
+    params,
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows.map(r => ({ ...r, details: JSON.parse(r.details_json || '{}') })));
+    }
+  );
+});
+
+/* ----------- Duplicate serial-number check (used by add/edit form) ----------- */
+app.get('/assets/check-duplicate', (req, res) => {
+  const serial    = (req.query.serialNumber || '').trim();
+  const excludeId = (req.query.excludeId   || '').trim();
+  if (!serial) return res.json({ exists: false });
+  const sql    = excludeId
+    ? `SELECT assetId FROM assets WHERE serialNumber = ? AND assetId != ? LIMIT 1`
+    : `SELECT assetId FROM assets WHERE serialNumber = ? LIMIT 1`;
+  const params = excludeId ? [serial, excludeId] : [serial];
+  db.get(sql, params, (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ exists: !!row, assetId: row?.assetId ?? null });
+  });
+});
+
+/* -------------------------- Images upload API -------------------------- */
+const imagesDir = path.resolve(__dirname, 'uploads', 'images');
+fs.mkdirSync(imagesDir, { recursive: true });
+
+const imageStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, imagesDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `${req.params.assetId}-${Date.now()}${ext}`);
+  }
+});
+
+const uploadImageOnly = multer({
+  storage: imageStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//.test(file.mimetype)) return cb(null, true);
+    cb(new Error('Only image files are allowed'));
+  }
+});
+
+app.post('/assets/:assetId/image', uploadImageOnly.single('file'), (req, res) => {
+  const { assetId } = req.params;
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const imageUrl = `/uploads/images/${req.file.filename}`;
+  db.run(
+    `INSERT INTO asset_images (assetId, url) VALUES (?, ?)`,
+    [assetId, imageUrl],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      const rowId = this.lastID;
+      res.json({ url: imageUrl, id: rowId, ocrText: null });
+
+      // Run OCR in background — does not block the upload response
+      const absPath = path.join(imagesDir, req.file.filename);
+      ocrImage(absPath).then(ocrText => {
+        if (ocrText) {
+          db.run(
+            `UPDATE asset_images SET ocrText = ? WHERE id = ?`,
+            [ocrText, rowId],
+            (e) => { if (e) console.error('OCR DB update error:', e.message); }
+          );
+        }
+      });
+    }
+  );
+});
+
+app.get('/assets/:assetId/images', (req, res) => {
+  const { assetId } = req.params;
+  db.all(
+    `SELECT id, url, uploadedAt, ocrText FROM asset_images WHERE assetId = ? ORDER BY uploadedAt ASC, id ASC`,
+    [assetId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ images: rows || [] });
+    }
+  );
+});
+
+app.delete('/assets/:assetId/images/:imageId', (req, res) => {
+  const { assetId, imageId } = req.params;
+  if (req.query.confirm !== 'true') return res.status(400).json({ error: 'confirm=true required' });
+  db.get(
+    `SELECT url FROM asset_images WHERE id = ? AND assetId = ?`,
+    [imageId, assetId],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!row) return res.status(404).json({ error: 'Image not found' });
+      const filename = path.basename(row.url);
+      const absPath  = path.join(imagesDir, filename);
+      db.run(`DELETE FROM asset_images WHERE id = ? AND assetId = ?`, [imageId, assetId], (err2) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+        fs.unlink(absPath, () => {});
+        res.json({ deleted: true });
+      });
+    }
+  );
+});
+
+/* --------- SPA catch-all: authenticated users navigating directly to a route --- */
+if (fs.existsSync(BUILD_DIR)) {
+  app.get(/.*/, (req, res) => res.sendFile(path.join(BUILD_DIR, 'index.html')));
+}
+
 /* --------------------------------- Start --------------------------------- */
 dedupeAndIndex((err) => {
   if (err) {
@@ -1151,8 +1621,31 @@ dedupeAndIndex((err) => {
             console.error('Migration error (asset_invoices):', err5);
             process.exit(1);
           }
-          app.listen(PORT, '0.0.0.0', () => {
-            console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+          ensureAuditLogTable((err6) => {
+            if (err6) {
+              console.error('Migration error (audit_log):', err6);
+              process.exit(1);
+            }
+            ensureImagesTable((err7) => {
+              if (err7) {
+                console.error('Migration error (asset_images):', err7);
+                process.exit(1);
+              }
+              ensureOcrColumn((err8) => {
+                if (err8) {
+                  console.error('Migration error (ocrText column):', err8);
+                  process.exit(1);
+                }
+                app.listen(PORT, '0.0.0.0', () => {
+                  console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+                  if (_tesseractCreateWorker) {
+                    console.log('🔍 OCR enabled (tesseract.js) — language data will download on first use');
+                  } else {
+                    console.log('⚠️  OCR disabled (tesseract.js not found)');
+                  }
+                });
+              });
+            });
           });
         });
       });

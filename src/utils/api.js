@@ -1,13 +1,11 @@
 // src/utils/api.js
 
-// Prefer environment variable; otherwise default to the SAME host you opened the app on.
-// This avoids localhost/IP mismatches during dev and LAN testing.
+// Prefer environment variable; otherwise use the same origin as the page so that
+// the CRA dev-server proxy (or a reverse-proxy in production) can forward API
+// calls to the backend without the iPad/mobile needing direct access to port 4000.
 // Restart `npm start` after changing .env (REACT_APP_API_URL).
-const defaultHost =
-  typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-const defaultProtocol =
-  typeof window !== 'undefined' ? window.location.protocol : 'http:';
-const DEFAULT_API = `${defaultProtocol}//${defaultHost}:4000`;
+const DEFAULT_API =
+  typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3100';
 
 export const API_URL = (process.env.REACT_APP_API_URL || DEFAULT_API).replace(/\/+$/, '');
 
@@ -57,11 +55,28 @@ export function logout() {
   return request('/auth/logout', { method: 'POST' });
 }
 
+/* ===== Duplicate check ===== */
+export function checkSerialDuplicate(serialNumber, excludeId) {
+  const params = new URLSearchParams({ serialNumber });
+  if (excludeId) params.set('excludeId', excludeId);
+  return request(`/assets/check-duplicate?${params}`);
+}
+
 /* ===== Assets CRUD ===== */
 
-// Get all assets
-export async function getAllAssets() {
-  return request('/assets', { method: 'GET' });
+// Get assets — optional pagination + server-side search/filter.
+// page=0 or omitted → returns all as flat array (backward compat / export).
+// page>0            → returns { items, total, page, pageSize }.
+export async function getAllAssets({ page, pageSize, search, group, assetType, department } = {}) {
+  const params = new URLSearchParams();
+  if (page)                        params.set('page',       String(page));
+  if (pageSize)                    params.set('pageSize',   String(pageSize));
+  if (search)                      params.set('search',     search);
+  if (group?.length)               params.set('group',      group.join(','));
+  if (assetType?.length)           params.set('assetType',  assetType.join(','));
+  if (department?.length)          params.set('department', department.join(','));
+  const qs = params.toString();
+  return request(`/assets${qs ? `?${qs}` : ''}`, { method: 'GET' });
 }
 
 // Add new asset (expects assetId present, per current backend contract)
@@ -123,6 +138,26 @@ export async function scanNetwork(target) {
   });
 }
 
+// Generate N asset IDs in one server round-trip (avoids parallel-transaction errors).
+// types: array of assetType strings, e.g. ['Desktop / Laptop', 'Monitor', 'Laptop']
+// Returns array of IDs in the same order, e.g. ['DES-001', 'MON-001', 'LAP-001']
+export async function bulkNextIds(types) {
+  const { ids } = await request('/assets/bulk-next-ids', {
+    method: 'POST',
+    body: JSON.stringify({ types }),
+  });
+  return ids;
+}
+
+// Check which serial numbers already exist in the DB
+// Returns { existing: { 'SERIAL': { assetId, hostName, assignedTo, assetType } } }
+export async function checkSerials(serials) {
+  return request('/assets/check-serials', {
+    method: 'POST',
+    body: JSON.stringify({ serials }),
+  });
+}
+
 // Bulk add assets
 export async function bulkAddAssets(assets) {
   return request(`/assets/bulk`, {
@@ -144,6 +179,26 @@ export async function uploadInvoice(assetId, file) {
     method: 'POST',
     body: fd,
   });
+}
+
+/* ===== Images API ===== */
+export async function uploadImage(assetId, file) {
+  if (!assetId) throw new Error('assetId is required to upload an image');
+  if (!(file instanceof File)) throw new Error('file must be a File');
+  const fd = new FormData();
+  fd.append('file', file);
+  const encoded = encodeURIComponent(assetId);
+  return request(`/assets/${encoded}/image`, { method: 'POST', body: fd });
+}
+
+export async function getImages(assetId) {
+  const encoded = encodeURIComponent(assetId);
+  return request(`/assets/${encoded}/images`, { method: 'GET' });
+}
+
+export async function deleteImage(assetId, imageId) {
+  const encoded = encodeURIComponent(assetId);
+  return request(`/assets/${encoded}/images/${imageId}?confirm=true`, { method: 'DELETE' });
 }
 
 /* ===== Consumables API ===== */

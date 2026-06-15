@@ -11,5 +11,5 @@ export const groups = [
   "Software",
   "Internet & Access",
   "Data Center",
-  "Communcation"
+  "Communication"
 ];
