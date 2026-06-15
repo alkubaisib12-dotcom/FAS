@@ -1,11 +1,12 @@
 // src/components/AssetTable.jsx
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { getAllAssets, deleteAsset, forceDeleteAsset } from '../utils/api';
+import { getAllAssets, deleteAsset, forceDeleteAsset, getAssetFilterOptions } from '../utils/api';
 import AssetForm from './AssetForm';
 import SmartExportPanel from './SmartExportPanel';
 import Modal from './Modal';
 
 const PAGE_SIZE = 100;
+const FILTER_FIELDS = { group: 'Group', assetType: 'Asset Type', department: 'Department' };
 
 export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, backSignal }) {
   const [assets, setAssets]           = useState([]);
@@ -17,6 +18,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
   const [searchText, setSearchText]   = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [filter, setFilter]           = useState({ group: [], assetType: [], department: [] });
+  const [filterOptions, setFilterOptions] = useState({ group: [], assetType: [], department: [] });
   const [dropdown, setDropdown]       = useState({ field: null, open: false });
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
   const [showExportPanel, setShowExportPanel] = useState(false);
@@ -61,6 +63,27 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
   }, [debouncedSearch, filter]);
 
   useEffect(() => { loadAssets(page); }, [refreshSignal, page, loadAssets]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load Group / Asset Type / Department options from the ENTIRE dataset so the
+  // filter dropdowns always offer every value — not just whatever happens to be
+  // on the currently loaded page.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const opts = await getAssetFilterOptions();
+        if (cancelled) return;
+        setFilterOptions({
+          group: opts.groups ?? [],
+          assetType: opts.assetTypes ?? [],
+          department: opts.departments ?? [],
+        });
+      } catch (err) {
+        console.error('Failed to load filter options', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshSignal]);
 
   // Scroll + highlight when entering edit
   useEffect(() => {
@@ -108,11 +131,12 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
     setDropdownPosition({ top: rect.bottom, left: rect.left });
   };
 
-  // Include current-page values + already-selected values so selections stay visible
+  // All known values for this field (from the whole dataset) plus any
+  // already-selected values, so current selections never disappear.
   const uniqueValues = (field) => {
-    const pageVals     = assets.map(a => a[field]).filter(Boolean);
+    const allVals      = filterOptions[field] || [];
     const selectedVals = filter[field] || [];
-    return Array.from(new Set([...pageVals, ...selectedVals]));
+    return Array.from(new Set([...allVals, ...selectedVals]));
   };
 
   const handleCheckboxChange = (field, value) => {
@@ -126,6 +150,11 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
 
   const clearFilter   = (field) => setFilter(prev => ({ ...prev, [field]: [] }));
   const closeDropdown = () => setDropdown(prev => ({ ...prev, open: false }));
+
+  const clearAllFilters = () => {
+    setSearchText('');
+    setFilter({ group: [], assetType: [], department: [] });
+  };
 
   const startEdit = (asset) => { setEditingAsset(asset); onEditStart && onEditStart(); };
   const endEdit   = (refresh = false) => {
@@ -156,11 +185,44 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  // Active search/filter chips — shows the user exactly what's applied right
+  // now, with a way to remove any single one or clear everything at once.
+  const hasActiveSearch  = debouncedSearch.trim().length > 0;
+  const hasActiveFilters = hasActiveSearch
+    || filter.group.length > 0
+    || filter.assetType.length > 0
+    || filter.department.length > 0;
+
+  const activeChips = [];
+  if (hasActiveSearch) {
+    activeChips.push({
+      key: 'search',
+      label: `Search: "${debouncedSearch}"`,
+      onRemove: () => setSearchText(''),
+    });
+  }
+  Object.entries(FILTER_FIELDS).forEach(([field, label]) => {
+    (filter[field] || []).forEach((value) => {
+      activeChips.push({
+        key: `${field}:${value}`,
+        label: `${label}: ${value}`,
+        onRemove: () => handleCheckboxChange(field, value),
+      });
+    });
+  });
+
+  const thFilterStyle = (field) => ({
+    ...thStyle,
+    background: (filter[field] && filter[field].length > 0) ? '#cfe8ff' : 'transparent',
+  });
+
+  const dropdownValues = dropdown.open ? uniqueValues(dropdown.field) : [];
+
   return (
     <div style={{ padding: '20px', background: '#f9f9f9', borderRadius: '10px' }}>
       <h2 style={{ marginBottom: '10px', fontSize: '24px' }}>Asset List</h2>
 
-      <div style={{ marginBottom: '16px' }}>
+      <div style={{ marginBottom: '12px' }}>
         <input
           type="text"
           placeholder="Search by Asset ID, Serial, Brand, or text in photos…"
@@ -169,6 +231,31 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
           style={{ padding: '6px', width: '300px' }}
         />
       </div>
+
+      {/* Active search/filter indicator — always visible while filtering */}
+      {hasActiveFilters && (
+        <div style={activeBarStyle}>
+          <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#555' }}>Filtering by:</span>
+          {activeChips.map((chip) => (
+            <span key={chip.key} style={chipStyle}>
+              {chip.label}
+              <button onClick={chip.onRemove} style={chipRemoveStyle} aria-label={`Remove ${chip.label}`} title="Remove this filter">×</button>
+            </span>
+          ))}
+          <button onClick={clearAllFilters} style={clearAllBtnStyle}>Clear all</button>
+        </div>
+      )}
+
+      {/* Result count — visible even when the search/filter returns 0 rows */}
+      {!loading && (
+        <div style={summaryStyle}>
+          {hasActiveFilters
+            ? (total === 0
+                ? 'No assets match your search/filters.'
+                : `${total} result${total === 1 ? '' : 's'} found`)
+            : `${total} asset${total === 1 ? '' : 's'} total`}
+        </div>
+      )}
 
       <button
         onClick={handleOpenExport}
@@ -200,27 +287,46 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
 
       {loading ? (
         <p style={{ fontStyle: 'italic', color: '#999' }}>Loading…</p>
-      ) : assets.length === 0 ? (
-        <p style={{ fontStyle: 'italic', color: '#999' }}>No assets found.</p>
       ) : (
         <div style={{ overflowX: 'auto', position: 'relative' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff' }}>
             <thead style={{ background: '#e9ecef' }}>
               <tr>
                 <th style={thStyle}>Asset ID</th>
-                <th style={thStyle} onClick={(e) => toggleDropdown(e, 'group')}>Group ▾</th>
-                <th style={thStyle} onClick={(e) => toggleDropdown(e, 'assetType')}>Asset Type ▾</th>
+                <th style={thFilterStyle('group')} onClick={(e) => toggleDropdown(e, 'group')}>
+                  Group{filter.group.length > 0 ? ` (${filter.group.length})` : ''} ▾
+                </th>
+                <th style={thFilterStyle('assetType')} onClick={(e) => toggleDropdown(e, 'assetType')}>
+                  Asset Type{filter.assetType.length > 0 ? ` (${filter.assetType.length})` : ''} ▾
+                </th>
                 <th style={thStyle}>Brand</th>
                 <th style={thStyle}>Model</th>
                 <th style={thStyle}>Serial Number</th>
                 <th style={thStyle}>Host Name</th>
                 <th style={thStyle}>Assigned To</th>
-                <th style={thStyle} onClick={(e) => toggleDropdown(e, 'department')}>Department ▾</th>
+                <th style={thFilterStyle('department')} onClick={(e) => toggleDropdown(e, 'department')}>
+                  Department{filter.department.length > 0 ? ` (${filter.department.length})` : ''} ▾
+                </th>
                 <th style={thStyle}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {assets.map((asset) => (
+              {assets.length === 0 ? (
+                <tr>
+                  <td colSpan={10} style={emptyCellStyle}>
+                    {hasActiveFilters ? (
+                      <>
+                        <div>No assets match your current search/filters.</div>
+                        <button onClick={clearAllFilters} style={{ ...clearAllBtnStyle, marginTop: '10px' }}>
+                          Clear search &amp; filters
+                        </button>
+                      </>
+                    ) : (
+                      'No assets found.'
+                    )}
+                  </td>
+                </tr>
+              ) : assets.map((asset) => (
                 <tr
                   key={asset.assetId}
                   style={{ borderBottom: '1px solid #ddd', transition: 'background 0.2s' }}
@@ -253,7 +359,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
           {/* Pagination bar */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '12px', fontSize: '14px' }}>
             <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} style={pageBtnStyle}>← Prev</button>
-            <span>Page {page} of {totalPages} &nbsp;·&nbsp; {total} total assets</span>
+            <span>Page {page} of {totalPages} &nbsp;·&nbsp; {total} total {hasActiveFilters ? 'matching ' : ''}assets</span>
             <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} style={pageBtnStyle}>Next →</button>
           </div>
 
@@ -263,10 +369,14 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
               style={{
                 position: 'fixed', top: dropdownPosition.top, left: dropdownPosition.left,
                 zIndex: 1000, background: '#fff', border: '1px solid #ccc',
-                borderRadius: '5px', padding: '10px', boxShadow: '0 4px 10px rgba(0,0,0,0.1)'
+                borderRadius: '5px', padding: '10px', boxShadow: '0 4px 10px rgba(0,0,0,0.1)',
+                maxHeight: '320px', overflowY: 'auto'
               }}
             >
-              {uniqueValues(dropdown.field).map((val) => (
+              {dropdownValues.length === 0 && (
+                <div style={{ fontSize: '12px', color: '#999', padding: '4px 0' }}>No values available</div>
+              )}
+              {dropdownValues.map((val) => (
                 <div key={val} style={{ marginBottom: '8px' }}>
                   <label style={{ cursor: 'pointer' }}>
                     <input
@@ -296,3 +406,9 @@ const tdStyle      = { padding: '10px', fontSize: '14px', verticalAlign: 'top' }
 const editBtnStyle   = { background: '#007bff', color: '#fff', padding: '5px 10px', marginRight: '5px', border: 'none', borderRadius: '4px', cursor: 'pointer' };
 const deleteBtnStyle = { background: '#dc3545', color: '#fff', padding: '5px 10px', border: 'none', borderRadius: '4px', cursor: 'pointer' };
 const pageBtnStyle   = { padding: '4px 12px', border: '1px solid #ccc', borderRadius: '4px', cursor: 'pointer', background: '#fff' };
+const summaryStyle    = { marginBottom: '12px', fontSize: '14px', color: '#555' };
+const emptyCellStyle  = { padding: '30px', textAlign: 'center', fontStyle: 'italic', color: '#999' };
+const activeBarStyle  = { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', marginBottom: '12px', padding: '8px 10px', background: '#eef4ff', border: '1px solid #cfe0ff', borderRadius: '6px' };
+const chipStyle       = { display: 'inline-flex', alignItems: 'center', gap: '6px', background: '#fff', border: '1px solid #b6d0ff', borderRadius: '999px', padding: '4px 10px', fontSize: '13px', color: '#1d4ed8' };
+const chipRemoveStyle = { border: 'none', background: 'transparent', color: '#1d4ed8', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', lineHeight: 1, padding: 0 };
+const clearAllBtnStyle = { fontSize: '13px', color: '#dc3545', border: '1px solid #dc3545', background: '#fff', borderRadius: '5px', padding: '4px 10px', cursor: 'pointer' };

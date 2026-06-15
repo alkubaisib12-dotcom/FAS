@@ -690,6 +690,29 @@ app.get('/assets', (req, res) => {
   });
 });
 
+// Distinct Group / Asset Type / Department values across the WHOLE table —
+// powers the filter dropdowns so options aren't limited to whatever is on
+// the current page of results.
+app.get('/assets/filter-options', (req, res) => {
+  const distinctValues = (column) => new Promise((resolve, reject) => {
+    db.all(
+      `SELECT DISTINCT ${column} AS val FROM assets WHERE ${column} IS NOT NULL AND TRIM(${column}) <> '' ORDER BY val COLLATE NOCASE`,
+      [],
+      (err, rows) => err ? reject(err) : resolve(rows.map(r => r.val))
+    );
+  });
+
+  Promise.all([
+    distinctValues('"group"'),
+    distinctValues('assetType'),
+    distinctValues('department'),
+  ])
+    .then(([groupsList, assetTypes, departments]) => {
+      res.json({ groups: groupsList, assetTypes, departments });
+    })
+    .catch(err => res.status(500).json({ error: err.message }));
+});
+
 // Add new asset — normalization + INSERT OR IGNORE (skip on dup)
 app.post('/assets', (req, res) => {
   const body = { ...req.body };

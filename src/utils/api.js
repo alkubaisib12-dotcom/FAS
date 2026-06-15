@@ -79,6 +79,12 @@ export async function getAllAssets({ page, pageSize, search, group, assetType, d
   return request(`/assets${qs ? `?${qs}` : ''}`, { method: 'GET' });
 }
 
+// Distinct Group / Asset Type / Department values across ALL assets —
+// used to populate filter dropdowns regardless of which page is loaded.
+export async function getAssetFilterOptions() {
+  return request('/assets/filter-options', { method: 'GET' });
+}
+
 // Add new asset (expects assetId present, per current backend contract)
 export async function addAsset(asset) {
   return request('/assets', {
