@@ -6,6 +6,9 @@ dist/
 # local data & secrets
 # The live data (assets.db and uploads) sits in DATA_DIR on the server, or in
 # asset-manager-backend when DATA_DIR is unset; it never belongs in this public repo.
+# Six invoice PDFs under uploads/invoices were committed before this rule and stay tracked
+# until the server's uploads have moved to DATA_DIR: untracking them earlier would make a
+# pull delete the live copies that FAS still serves from this folder.
 assets.db
 *.sqlite
 *.sqlite3

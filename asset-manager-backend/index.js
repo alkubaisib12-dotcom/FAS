@@ -149,7 +149,7 @@ const dbPath = dataPaths.dbPath;
 const db = new sqlite3.Database(dbPath);
 
 // Wait up to 5 s for a lock instead of node-sqlite3's default 1 s. The backup tool reads
-// assets.db just before each Veeam run, and a write that meets its read lock for longer than
+// assets.db just before each server backup run, and a write that meets its read lock for longer than
 // the timeout fails with SQLITE_BUSY. Several writes here have no callback (session pruning,
 // used_ids, the rename transaction), and an error on those is an unhandled 'error' event that
 // ends the whole process, as the 2025-10-28 crash did. 5 s lets such a write simply wait.

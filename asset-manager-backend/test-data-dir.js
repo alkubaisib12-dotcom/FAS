@@ -46,7 +46,10 @@ async function main() {
   }
 
   /* ---- 3. The guard, on a fake backend folder ---- */
-  const backend = path.join(tmp, 'backend');
+  // Laid out like the server, <apps>\FAS\asset-manager-backend, so the shared data folder the
+  // guard looks for is tmp\apps\data\FAS. The DATA_DIR used here, tmp\data\FAS, is elsewhere.
+  const backend = path.join(tmp, 'apps', 'FAS', 'asset-manager-backend');
+  const sharedDir = path.join(tmp, 'apps', 'data', 'FAS');
   fs.mkdirSync(backend, { recursive: true });
 
   {
@@ -85,6 +88,32 @@ async function main() {
       r.warnings.some(w => w.includes(path.join(dataDir, 'uploads')) && w.includes('does not exist')), r.warnings.join(' | '));
   }
 
+  {
+    // The warning above says to remove the old file, so it must not be the one with the newest writes.
+    const oldDb = path.join(backend, 'assets.db');
+    const newDb = path.join(dataDir, 'assets.db');
+    const at = s => fs.utimesSync(oldDb, s, s);
+    const base = Math.floor(Date.now() / 1000) - 3600;
+    fs.utimesSync(newDb, base, base);
+    const guard = () => checkDataDir(resolveDataPaths({ DATA_DIR: dataDir }, backend));
+
+    at(base + 600);
+    const newer = guard();
+    check('guard refuses when the old assets.db was written after the DATA_DIR one', Boolean(newer.error), newer.warnings.join(' | '));
+    check('that refusal names both files', newer.error && newer.error.includes(oldDb) && newer.error.includes(newDb), newer.error);
+
+    at(base);
+    const same = guard();
+    check('a copy that kept the last-write time only warns',
+      same.error === null && same.warnings.some(w => w.includes('NOT used')), same.error);
+    at(base + 1);
+    const slack = guard();
+    check('a gap within 2 s (file system rounding) only warns', slack.error === null, slack.error);
+    at(base - 600);
+    const older = guard();
+    check('an old assets.db older than the DATA_DIR one only warns', older.error === null, older.error);
+  }
+
   fs.rmSync(path.join(backend, 'assets.db'));
   fs.rmSync(path.join(backend, 'uploads'), { recursive: true });
   fs.mkdirSync(path.join(dataDir, 'uploads', 'images'), { recursive: true });
@@ -101,6 +130,31 @@ async function main() {
     touch(path.join(backend, 'assets.db'));
     const r2 = checkDataDir(resolveDataPaths({}, backend));
     check('DATA_DIR unset with assets.db present: silent, as before', r2.error === null && r2.warnings.length === 0);
+  }
+
+  /* ---- 3b. DATA_DIR line lost from a remade .env after a restore ---- */
+  {
+    fs.rmSync(path.join(backend, 'assets.db'));
+    const sharedDb = path.join(sharedDir, 'assets.db');
+    touch(sharedDb);
+    const p = resolveDataPaths({}, backend);
+    check('the shared data folder is found beside the app folders', p.sharedDbPath === sharedDb, p.sharedDbPath);
+    const r = checkDataDir(p);
+    check('DATA_DIR unset, no assets.db here, one in the shared data folder: refuses', Boolean(r.error), r.warnings.join(' | '));
+    check('that refusal names the shared database and the DATA_DIR line to add',
+      r.error && r.error.includes(sharedDb) && r.error.includes(`DATA_DIR=${sharedDir}`), r.error);
+    check('that refusal did not create assets.db in the code folder', !fs.existsSync(path.join(backend, 'assets.db')));
+
+    touch(path.join(backend, 'assets.db'));
+    const r2 = checkDataDir(resolveDataPaths({}, backend));
+    check('DATA_DIR unset with assets.db here and in the shared folder: starts as before, warns the shared one is not used',
+      r2.error === null && r2.warnings.some(w => w.includes(sharedDb) && w.includes('NOT used')), r2.error || r2.warnings.join(' | '));
+
+    if (process.platform === 'win32') {
+      const s = resolveDataPaths({}, 'E:\\Apps\\FAS\\asset-manager-backend').sharedDbPath;
+      check('server layout: E:\\Apps\\FAS\\asset-manager-backend looks in E:\\Apps\\data\\FAS',
+        s === 'E:\\Apps\\data\\FAS\\assets.db', s);
+    }
   }
 
   /* ---- 4. index.js takes every data path from dataDir.js, and checks before opening ---- */
