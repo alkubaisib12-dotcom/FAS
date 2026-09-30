@@ -157,6 +157,115 @@ async function main() {
     }
   }
 
+  /* ---- 3c. An undo of the move left half done ---- */
+  // The move renames assets.db and uploads here to <name>.moved-<date>. The undo renames them
+  // back and the shared data folder aside. The 09-30 rehearsal review: when a rename back fails
+  // (a window open in the folder, a mistyped date), FAS must refuse rather than make a new empty
+  // assets.db and uploads folder here, which would also stop the rename back.
+  {
+    const oldDb = path.join(backend, 'assets.db');
+    const oldUploads = path.join(backend, 'uploads');
+    const dbCopy = path.join(backend, 'assets.db.moved-20260930');
+    const uploadsCopy = path.join(backend, 'uploads.moved-20260930');
+    const aside = path.join(tmp, 'apps', 'data', 'FAS.undone-20260930');
+    const ren = (src, to) => `ren ${/\s/.test(src) ? `"${src}"` : src} ${to}`;
+    const guard = () => checkDataDir(resolveDataPaths({}, backend));
+    const nothingMade = () => !fs.existsSync(oldDb) && !fs.existsSync(oldUploads);
+
+    // Right after the move: both renamed here, the data in the shared data folder.
+    fs.renameSync(oldDb, dbCopy);
+    touch(path.join(uploadsCopy, 'invoices', 'A-1.pdf'));
+    fs.mkdirSync(path.join(sharedDir, 'uploads', 'images'), { recursive: true });
+    {
+      const r = checkDataDir(resolveDataPaths({ DATA_DIR: sharedDir }, backend));
+      check('with DATA_DIR set, the .moved copies the move leaves are no concern',
+        r.error === null && r.warnings.length === 0, r.error || r.warnings.join(' | '));
+    }
+
+    // The DATA_DIR line lost after the move, or an undo in the rehearsed order (rename back
+    // first) whose first ren failed. Both look the same, so both ways out are named, the
+    // DATA_DIR line first because an undo drops what was entered since the move.
+    {
+      const r = guard();
+      const e = r.error || '';
+      check('DATA_DIR unset, the data in the shared folder, the .moved copies here: refuses', Boolean(r.error), r.warnings.join(' | '));
+      check('that refusal names the DATA_DIR line first, then the ren lines of an undo',
+        e.includes(`Set DATA_DIR=${sharedDir} in`) && e.includes(ren(dbCopy, 'assets.db')) && e.includes(ren(uploadsCopy, 'uploads')) &&
+        e.indexOf(`DATA_DIR=${sharedDir}`) < e.indexOf('Only if the move is being undone'), e);
+      check('and says what an undo leaves behind', e.includes(`since the move then stays only in ${sharedDir}`), e);
+      check('and made nothing here', nothingMade());
+    }
+
+    // An undo that renamed the shared data folder aside first, then failed to rename back.
+    fs.renameSync(sharedDir, aside);
+    {
+      const r = guard();
+      const e = r.error || '';
+      check('half-done undo, nothing renamed back: refuses rather than make a new empty assets.db', Boolean(r.error), r.warnings.join(' | '));
+      check('that refusal says the data was moved out and names both copies',
+        e.includes(`no assets.db in ${backend}`) && e.includes('assets.db.moved-20260930, uploads.moved-20260930 are still there'), e);
+      check('and gives the exact ren line for each',
+        e.includes(`    ${ren(dbCopy, 'assets.db')}\n`) && e.includes(`    ${ren(uploadsCopy, 'uploads')}\n`), e);
+      check('and names the DATA_DIR line as the other way out',
+        e.includes(`add DATA_DIR=<the folder it was moved to> to ${path.join(backend, '.env')}`) &&
+        e.includes(`The move puts it in ${sharedDir}, but there is no assets.db there now.`), e);
+      check('and made nothing here', nothingMade());
+    }
+
+    // assets.db renamed back, uploads not.
+    fs.renameSync(dbCopy, oldDb);
+    {
+      const r = guard();
+      const e = r.error || '';
+      check('half-done undo, only assets.db back: refuses rather than start with no uploads', Boolean(r.error), r.warnings.join(' | '));
+      check('that refusal names the uploads ren line and no other',
+        e.includes(`no uploads folder in ${backend}`) && e.includes(`    ${ren(uploadsCopy, 'uploads')}`) && !e.includes('assets.db.moved'), e);
+      check('and made no uploads folder', !fs.existsSync(oldUploads));
+    }
+
+    // Both renamed back: the undo is done and FAS starts on its old data, as before the move.
+    fs.renameSync(uploadsCopy, oldUploads);
+    {
+      const r = guard();
+      check('undo done: starts with no error and no warnings', r.error === null && r.warnings.length === 0, r.error || r.warnings.join(' | '));
+    }
+
+    // Only an uploads copy is left as a sign of the move and assets.db is gone with no copy
+    // here: still refused, since a new empty database is the one thing certain to be wrong.
+    const gone = path.join(tmp, 'gone-assets.db');
+    fs.renameSync(oldDb, gone);
+    const oldUploadsCopy = path.join(backend, 'uploads.moved-20260929');
+    touch(path.join(oldUploadsCopy, 'images', 'x.jpg'));
+    {
+      const r = guard();
+      const e = r.error || '';
+      check('no assets.db and only an uploads.moved copy here: refuses', Boolean(r.error), r.warnings.join(' | '));
+      check('that refusal says there is no assets.db copy to rename back',
+        e.includes('uploads.moved-20260929 is still there') && e.includes('no assets.db.moved-YYYYMMDD here to rename back') && !/^\s+ren /m.test(e), e);
+      check('and made no assets.db', !fs.existsSync(oldDb));
+    }
+    fs.rmSync(oldUploadsCopy, { recursive: true });
+
+    // Several copies of one name: the ren line takes the newest, by date and then by the -2, -3
+    // the move adds when a name is taken, and the others are listed. Lookalikes are not copies.
+    fs.rmSync(oldUploads, { recursive: true });
+    fs.renameSync(gone, path.join(backend, 'assets.db.moved-20260930'));
+    for (const n of ['assets.db.moved-20260930-10', 'assets.db.moved-20261001', 'assets.db.moved-20261001-2',
+      'assets.db.moved-2026100', 'assets.db.moved-20261002.bak', 'assets.db.moved']) touch(path.join(backend, n));
+    {
+      const r = guard();
+      const e = r.error || '';
+      check('several copies: the ren line takes the newest',
+        e.includes(`    ${ren(path.join(backend, 'assets.db.moved-20261001-2'), 'assets.db')}\n`), e);
+      check('and lists the older ones',
+        e.includes('Older copies are also there (assets.db.moved-20261001, assets.db.moved-20260930-10, assets.db.moved-20260930): each ren line above takes the newest.'), e);
+      check('names that only look like a copy are ignored',
+        !/assets\.db\.moved-2026100[,)\s]|\.bak|assets\.db\.moved[,)\s]/.test(e), e);
+    }
+    for (const n of fs.readdirSync(backend)) fs.rmSync(path.join(backend, n), { recursive: true, force: true });
+    fs.renameSync(aside, sharedDir);
+  }
+
   /* ---- 4. index.js takes every data path from dataDir.js, and checks before opening ---- */
   {
     const src = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
@@ -171,6 +280,10 @@ async function main() {
     const openAt = src.indexOf('new sqlite3.Database(');
     check('index.js runs the guard and exits before opening the database',
       guardAt > 0 && exitAt > guardAt && openAt > exitAt);
+    // A refusal must leave the code folder as it found it, so that the ren lines it gives still work.
+    const mkdirs = ['fs.mkdirSync(invoicesDir', 'fs.mkdirSync(imagesDir'].map(m => src.indexOf(m));
+    check('index.js exits before it makes the uploads folders',
+      exitAt > 0 && mkdirs.every(i => i > exitAt), mkdirs.join(', '));
     check('index.js sets a 5 s busy timeout right after opening',
       /new sqlite3\.Database\(dbPath\);[\s\S]{0,800}?db\.configure\('busyTimeout', 5000\);/.test(src));
   }

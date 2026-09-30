@@ -65,6 +65,26 @@ function samePath(a, b) {
   return norm(a) === norm(b);
 }
 
+// The data move (move-data in the server backup tool) renames assets.db and uploads here to
+// <name>.moved-YYYYMMDD, or <name>.moved-YYYYMMDD-2 and so on when that name is taken, and never
+// deletes them; undoing the move renames them back. Returns one name's copies, newest first.
+function movedCopies(dir, name) {
+  const re = new RegExp(`^${name.replace(/\./g, '\\.')}\\.moved-(\\d{8})(?:-(\\d+))?$`, 'i');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { /* no folder, so no copies */ }
+  return names
+    .map(n => ({ n, m: re.exec(n) }))
+    .filter(c => c.m)
+    .sort((a, b) => (b.m[1] - a.m[1]) || ((b.m[2] || 1) - (a.m[2] || 1)))
+    .map(c => c.n);
+}
+
+// The line to type in cmd to rename a copy back. ren takes the new name alone, not a path.
+function renLine(dir, from, to) {
+  const src = path.join(dir, from);
+  return `ren ${/\s/.test(src) ? `"${src}"` : src} ${to}`;
+}
+
 // Runs before the database is opened, because sqlite3 creates a missing file: FAS would start
 // on a new empty assets.db and people would carry on adding assets to it. Returns
 // { error, warnings }; the caller prints them and refuses to start when error is set.
@@ -76,28 +96,90 @@ function checkDataDir(p) {
 
   if (!p.fromEnv) {
     const shared = p.sharedDbPath && isFile(p.sharedDbPath);
-    if (!isFile(oldDb)) {
+    const sharedDir = p.sharedDbPath ? path.dirname(p.sharedDbPath) : null;
+    const dbHere = isFile(oldDb);
+    const uploadsHere = isDir(path.join(p.backendDir, 'uploads'));
+    const dbCopies = movedCopies(p.backendDir, 'assets.db');
+    const uploadCopies = movedCopies(p.backendDir, 'uploads');
+    // Only a name that is missing here can be put back: ren will not replace one that is there.
+    const putBack = [
+      ...(!dbHere && dbCopies.length ? [['assets.db', dbCopies]] : []),
+      ...(!uploadsHere && uploadCopies.length ? [['uploads', uploadCopies]] : []),
+    ];
+    const renLines = putBack.map(([name, copies]) => `    ${renLine(p.backendDir, copies[0], name)}`);
+    const older = putBack.flatMap(([, copies]) => copies.slice(1));
+    const olderNote = older.length ? [`  Older copies are also there (${older.join(', ')}): each ren line above takes the newest.`] : [];
+    const listed = names => `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'}`;
+
+    if (!dbHere) {
       // After a restore the code comes fresh from GitHub and .env is made again by hand, so the
       // DATA_DIR line is easy to lose. Without this check FAS would start on a new empty
       // assets.db while the real one sits in the shared data folder, and a warning in a service
       // log is as good as silent. Before the move that file does not exist, so a first start
       // still creates assets.db here as it always did.
       if (shared) {
-        return {
-          error: [
-            `FAS will not start: DATA_DIR is not set and there is no assets.db in ${p.backendDir},`,
-            `  but the FAS database is at: ${p.sharedDbPath}`,
-            `  Set DATA_DIR=${path.dirname(p.sharedDbPath)} in ${envFile}, then start FAS again.`,
-            '  Starting now would create a new empty database and leave that one unused.',
-          ].join('\n'),
-          warnings,
-        };
+        const error = [
+          `FAS will not start: DATA_DIR is not set and there is no assets.db in ${p.backendDir},`,
+          `  but the FAS database is at: ${p.sharedDbPath}`,
+          `  Set DATA_DIR=${sharedDir} in ${envFile}, then start FAS again.`,
+          '  Starting now would create a new empty database and leave that one unused.',
+        ];
+        // The same state is an undo whose first rename back failed, so the other way out is
+        // named too. DATA_DIR comes first: an undo drops whatever was entered since the move.
+        if (renLines.length) {
+          error.push(
+            '  Only if the move is being undone, put the old data back instead: with FAS stopped, run',
+            ...renLines,
+            `  then start FAS again. Anything entered in FAS since the move then stays only in ${sharedDir}.`,
+            ...olderNote
+          );
+        }
+        return { error: error.join('\n'), warnings };
+      }
+      // An undo left half done: the shared data folder renamed aside, as the undo does, and a
+      // rename back that failed (a window open in this folder, a mistyped date). The 09-30
+      // rehearsal review found that nothing then stopped FAS making a new empty assets.db and
+      // uploads folder here, which also blocks the rename back. The .moved copies are the one
+      // sign left that the data went somewhere.
+      if (dbCopies.length || uploadCopies.length) {
+        const error = [
+          `FAS will not start: DATA_DIR is not set and there is no assets.db in ${p.backendDir},`,
+          `  but the data was moved out of that folder and not all of it was put back: ${listed([...dbCopies, ...uploadCopies])} still there.`,
+          '  Starting now would create a new empty database and leave the real one unused.',
+        ];
+        if (dbCopies.length) {
+          error.push('  To put the data back, with FAS stopped, run', ...renLines, '  then start FAS again.', ...olderNote);
+        } else {
+          error.push('  There is no assets.db.moved-YYYYMMDD here to rename back, so find where assets.db went first.');
+        }
+        error.push(
+          `  Or, to keep FAS on the moved data, add DATA_DIR=<the folder it was moved to> to ${envFile},`,
+          `  then start FAS again.${sharedDir ? ` The move puts it in ${sharedDir}, but there is no assets.db there now.` : ''}`
+        );
+        return { error: error.join('\n'), warnings };
       }
       warnings.push(
         `No assets.db in ${p.backendDir}, so FAS is creating a new empty database there. ` +
         'If the FAS data was moved to a data folder, stop FAS and set DATA_DIR in ' +
         `${envFile} to that folder.`
       );
+    } else if (!uploadsHere && uploadCopies.length) {
+      // The undo got assets.db back but not uploads. FAS would serve none of the images and
+      // invoices, and its start makes a new empty uploads folder (index.js creates the images and
+      // invoices folders), after which ren refuses to put the real one back.
+      return {
+        error: [
+          `FAS will not start: DATA_DIR is not set and there is no uploads folder in ${p.backendDir},`,
+          `  but the uploads were moved out of that folder and not put back: ${listed(uploadCopies)} still there.`,
+          '  Starting now would show none of the uploaded images and invoices, and FAS would make a new',
+          '  empty uploads folder that stops the real one being renamed back.',
+          '  To put them back, with FAS stopped, run',
+          ...renLines,
+          '  then start FAS again.',
+          ...olderNote,
+        ].join('\n'),
+        warnings,
+      };
     } else if (shared) {
       warnings.push(
         `A database is also at ${p.sharedDbPath}. It is NOT used: DATA_DIR is not set, so FAS reads ${oldDb}. ` +
