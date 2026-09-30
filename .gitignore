@@ -17,6 +17,10 @@ assets.db
 *.db-wal
 *.db-shm
 asset-manager-backend/uploads/
+# Moving the data to DATA_DIR renames the old copy here to assets.db.moved-YYYYMMDD and
+# uploads.moved-YYYYMMDD, kept until someone deletes it by hand. It is the same live data, and
+# unignored it would sit in git status where "git add ." takes it and "git clean" deletes it.
+asset-manager-backend/*.moved-*
 .env
 .env.*
 !.env.example
