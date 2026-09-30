@@ -4,11 +4,22 @@ build/
 dist/
 
 # local data & secrets
+# The live data (assets.db and uploads) sits in DATA_DIR on the server, or in
+# asset-manager-backend when DATA_DIR is unset; it never belongs in this public repo.
 assets.db
 *.sqlite
+*.sqlite3
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+asset-manager-backend/uploads/
 .env
 .env.*
+!.env.example
+
+# tesseract.js language data, downloaded again on first OCR
+asset-manager-backend/tessdata/
 
 # misc
 .DS_Store

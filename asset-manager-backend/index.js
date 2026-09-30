@@ -12,6 +12,7 @@ const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const ldap = require('ldapjs');
 const multer = require('multer');
+const { resolveDataPaths, checkDataDir } = require('./dataDir');
 
 /* ── OCR (tesseract.js) — optional; degrades gracefully if not installed ── */
 let _tesseractCreateWorker = null;
@@ -134,8 +135,25 @@ app.use(cookieParser());
 app.use(express.json({ limit: '20mb' }));
 
 /* ------------------------------ SQLite ---------------------------------- */
-const dbPath = path.resolve(__dirname, 'assets.db');
+// assets.db and uploads live in DATA_DIR when .env sets it (see dataDir.js), else in this folder.
+// Checked before opening: sqlite3 would quietly create a new empty assets.db in a wrong DATA_DIR.
+const dataPaths = resolveDataPaths();
+const dataCheck = checkDataDir(dataPaths);
+dataCheck.warnings.forEach(w => console.warn(`WARNING: ${w}`));
+if (dataCheck.error) {
+  console.error(dataCheck.error);
+  process.exit(1);
+}
+
+const dbPath = dataPaths.dbPath;
 const db = new sqlite3.Database(dbPath);
+
+// Wait up to 5 s for a lock instead of node-sqlite3's default 1 s. The backup tool reads
+// assets.db just before each Veeam run, and a write that meets its read lock for longer than
+// the timeout fails with SQLITE_BUSY. Several writes here have no callback (session pruning,
+// used_ids, the rename transaction), and an error on those is an unhandled 'error' event that
+// ends the whole process, as the 2025-10-28 crash did. 5 s lets such a write simply wait.
+db.configure('busyTimeout', 5000);
 
 // Enable FK so ON DELETE CASCADE works
 db.run('PRAGMA foreign_keys = ON');
@@ -196,7 +214,7 @@ app.use(session({
 }));
 
 // Static serving for uploads
-app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
+app.use('/uploads', express.static(dataPaths.uploadsDir));
 
 db.run(`CREATE TABLE IF NOT EXISTS assets (
   assetId TEXT PRIMARY KEY,
@@ -1070,7 +1088,7 @@ app.post('/assets/bulk-next-ids', (req, res) => {
 });
 
 /* -------------------------- Invoices upload API -------------------------- */
-const invoicesDir = path.resolve(__dirname, 'uploads', 'invoices');
+const invoicesDir = dataPaths.invoicesDir;
 fs.mkdirSync(invoicesDir, { recursive: true });
 
 const storage = multer.diskStorage({
@@ -1589,7 +1607,7 @@ app.get('/assets/check-duplicate', (req, res) => {
 });
 
 /* -------------------------- Images upload API -------------------------- */
-const imagesDir = path.resolve(__dirname, 'uploads', 'images');
+const imagesDir = dataPaths.imagesDir;
 fs.mkdirSync(imagesDir, { recursive: true });
 
 const imageStorage = multer.diskStorage({
@@ -1721,6 +1739,7 @@ dedupeAndIndex((err) => {
                   }
                   app.listen(PORT, '0.0.0.0', () => {
                     console.log(`✅ Server running on port ${PORT} (listening on 0.0.0.0)`);
+                    console.log(`Data folder: ${dataPaths.dataDir}${dataPaths.fromEnv ? ' (DATA_DIR)' : ''}`);
                     if (_tesseractCreateWorker) {
                       console.log('🔍 OCR enabled (tesseract.js) — language data will download on first use');
                     } else {
