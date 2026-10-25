@@ -225,9 +225,9 @@ export async function deleteImage(assetId, imageId) {
 }
 
 /* ===== Consumables API ===== */
-// Get all consumables
-export async function getAllConsumables() {
-  return request('/consumables', { method: 'GET' });
+// Get all consumables (archived ones only when includeArchived is true)
+export async function getAllConsumables({ includeArchived = false } = {}) {
+  return request(`/consumables${includeArchived ? '?includeArchived=1' : ''}`, { method: 'GET' });
 }
 
 // Get next consumable ID
@@ -253,10 +253,16 @@ export async function updateConsumable(id, consumable) {
   });
 }
 
-// Delete consumable
+// Archive consumable (hidden from the list; it and its history are kept)
 export async function deleteConsumable(id) {
   const encoded = encodeURIComponent(id);
   return request(`/consumables/${encoded}`, { method: 'DELETE' });
+}
+
+// Bring an archived consumable back to the list
+export async function restoreConsumable(id) {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}/restore`, { method: 'POST' });
 }
 
 // Get custom fields
@@ -292,6 +298,16 @@ export async function addConsumableTransaction(id, type, quantity, reason = '') 
   return request(`/consumables/${encoded}/transaction`, {
     method: 'POST',
     body: JSON.stringify({ type, quantity, reason }),
+  });
+}
+
+// Stock count: set the stock to countedQuantity, refused (409) if it is no longer
+// expectedQuantity, the stock the person saw when they started counting
+export async function adjustConsumableStock(id, countedQuantity, expectedQuantity, reason = '') {
+  const encoded = encodeURIComponent(id);
+  return request(`/consumables/${encoded}/transaction`, {
+    method: 'POST',
+    body: JSON.stringify({ type: 'adjust', countedQuantity, expectedQuantity, reason }),
   });
 }
 

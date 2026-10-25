@@ -151,9 +151,23 @@ const db = new sqlite3.Database(dbPath);
 // Wait up to 5 s for a lock instead of node-sqlite3's default 1 s. The backup tool reads
 // assets.db just before each server backup run, and a write that meets its read lock for longer than
 // the timeout fails with SQLITE_BUSY. Several writes here have no callback (session pruning,
-// used_ids, the rename transaction), and an error on those is an unhandled 'error' event that
-// ends the whole process, as the 2025-10-28 crash did. 5 s lets such a write simply wait.
+// used_ids, the rename transaction), and an error on those was an unhandled 'error' event that
+// ended the whole process (see the db.run wrapper below). 5 s lets such a write simply wait.
 db.configure('busyTimeout', 5000);
+
+// Any db.run without a callback that fails emits an 'error' event nobody listens to, and Node then
+// ends the whole process: one failed statement (a BEGIN meeting another request's open transaction,
+// a lock held past the timeout) took FAS down for everyone. Give each such call a callback that
+// logs the failure instead. Calls that pass their own callback are unchanged.
+const dbRun = db.run.bind(db);
+db.run = function (sql, ...args) {
+  if (typeof args[args.length - 1] !== 'function') {
+    args.push((err) => {
+      if (err) console.error(`DB error in "${String(sql).trim().split(/\s+/).slice(0, 4).join(' ')} ...": ${err.message}`);
+    });
+  }
+  return dbRun(sql, ...args);
+};
 
 // Enable FK so ON DELETE CASCADE works
 db.run('PRAGMA foreign_keys = ON');
@@ -215,6 +229,11 @@ app.use(session({
 
 // Static serving for uploads
 app.use('/uploads', express.static(dataPaths.uploadsDir));
+
+// Run the schema statements below one after another. In node-sqlite3's default parallel mode a
+// CREATE INDEX or ALTER TABLE could run before its CREATE TABLE, so FAS crashed on its first start
+// with a new empty database ("no such table").
+db.serialize();
 
 db.run(`CREATE TABLE IF NOT EXISTS assets (
   assetId TEXT PRIMARY KEY,
@@ -281,6 +300,14 @@ db.run(`ALTER TABLE consumable_custom_fields ADD COLUMN sortOrder INTEGER DEFAUL
   }
 });
 
+// Archived items leave the store list but keep their stock history; deleting an item used to
+// delete its whole history with it (ON DELETE CASCADE below).
+db.run(`ALTER TABLE consumables ADD COLUMN archived INTEGER DEFAULT 0`, (err) => {
+  if (err && !String(err.message).includes('duplicate column')) {
+    console.error('Failed to add archived column:', err.message);
+  }
+});
+
 db.run(`CREATE TABLE IF NOT EXISTS used_consumable_ids ( id TEXT PRIMARY KEY )`);
 
 db.run(`CREATE TABLE IF NOT EXISTS consumable_transactions (
@@ -295,6 +322,8 @@ db.run(`CREATE TABLE IF NOT EXISTS consumable_transactions (
 )`);
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_consumable_transactions_consumableId ON consumable_transactions(consumableId)`);
+
+db.parallelize();
 
 // Safe migration to add invoiceUrl column if missing (legacy, last uploaded)
 function ensureInvoiceColumn(cb) {
@@ -426,6 +455,15 @@ const ASSET_COLUMNS = new Set([
   'accessLevel','licenseKey','complianceStatus','documentation','remarks',
   'lastAuditDate','disposedDate','replacementPlan','invoiceUrl'
 ]);
+
+// Columns a bulk import (Scan Network, ManageEngine) fills, in INSERT order.
+const BULK_COLUMNS = [
+  'assetId','group','assetType','brandModel','serialNumber','hostName','assignedTo','department',
+  'ipAddress','macAddress','osFirmware','cpu','ram','storage','portDetails','powerConsumption',
+  'purchaseDate','warrantyExpiry','eol','maintenanceExpiry','cost','depreciation','residualValue',
+  'status','condition','usagePurpose','accessLevel','licenseKey','complianceStatus','documentation',
+  'remarks','lastAuditDate','disposedDate','replacementPlan'
+];
 
 function sanitizeAssetPayload(obj) {
   const out = {};
@@ -831,36 +869,33 @@ app.post('/assets/bulk', (req, res) => {
     return out;
   });
 
-  const sql = `INSERT OR IGNORE INTO assets (
-    assetId,"group",assetType,brandModel,serialNumber,hostName,assignedTo,department,ipAddress,macAddress,osFirmware,cpu,ram,storage,
-    portDetails,powerConsumption,purchaseDate,warrantyExpiry,eol,maintenanceExpiry,cost,depreciation,residualValue,
-    status,condition,usagePurpose,accessLevel,licenseKey,complianceStatus,documentation,remarks,lastAuditDate,disposedDate,replacementPlan
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+  // The placeholders are built from the column list, so the two can never disagree again. A
+  // hand-typed list had 34 columns and 33 "?", and every Scan Network or ManageEngine import
+  // failed with "33 values for 34 columns" and took the whole server down with it.
+  const placeholders = BULK_COLUMNS.map(() => '?').join(',');
+  const sql = `INSERT OR IGNORE INTO assets (${BULK_COLUMNS.map(c => (c === 'group' ? '"group"' : c)).join(',')}) VALUES (${placeholders})`;
 
+  // One row at a time, so a real failure can stop the import and be reported.
   let insertedCount = 0;
-  const insert = db.prepare(sql);
-
-  db.serialize(() => {
-    listNorm.forEach(a => {
-      insert.run([
-        a.assetId, a.group, a.assetType, a.brandModel, a.serialNumber, a.hostName, a.assignedTo, a.department, a.ipAddress, a.macAddress, a.osFirmware, a.cpu, a.ram, a.storage,
-        a.portDetails, a.powerConsumption, a.purchaseDate, a.warrantyExpiry, a.eol, a.maintenanceExpiry, a.cost, a.depreciation, a.residualValue,
-        a.status, a.condition, a.usagePurpose, a.accessLevel, a.licenseKey, a.complianceStatus, a.documentation, a.remarks, a.lastAuditDate, a.disposedDate, a.replacementPlan
-      ], function (err) {
-        if (err) return; // treat constraint as skip
-        if (this.changes > 0) {
-          insertedCount += 1;
-          db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [a.assetId]);
-        }
-      });
+  let i = 0;
+  const insertNext = () => {
+    if (i >= listNorm.length) {
+      const skipped = listNorm.length - insertedCount;
+      logAudit(req, 'asset.bulk_imported', 'asset', '', { inserted: insertedCount, skipped });
+      return res.json({ inserted: insertedCount, skipped });
+    }
+    const a = listNorm[i++];
+    db.run(sql, BULK_COLUMNS.map(c => a[c] ?? null), function (err) {
+      // OR IGNORE already turns a duplicate assetId, MAC or IP into a skipped row (no error).
+      if (err) return res.status(500).json({ error: err.message, inserted: insertedCount });
+      if (this.changes > 0) {
+        insertedCount += 1;
+        db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [a.assetId]);
+      }
+      insertNext();
     });
-  });
-
-  insert.finalize((err) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const skipped = listNorm.length - insertedCount;
-    res.json({ inserted: insertedCount, skipped });
-  });
+  };
+  insertNext();
 });
 
 // Update existing — normalization; 409 on MAC/IP collisions
@@ -1281,12 +1316,21 @@ app.post('/manageengine/fetch', async (req, res) => {
 });
 
 /* ----------------------------- Consumables API --------------------------- */
-// Get all consumables with custom fields merged
+// A whole number from a JSON body value (5 or "5"), or null. Stock is counted in whole units,
+// and a value sent as text must not be joined onto the stock as text ("10" + "5").
+function toWholeNumber(v) {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+  return Number.isInteger(n) ? n : null;
+}
+
+// Get all consumables with custom fields merged. Archived items only with ?includeArchived=1.
 app.get('/consumables', (req, res) => {
-  db.all('SELECT * FROM consumables ORDER BY id', [], (err, rows) => {
+  const where = req.query.includeArchived === '1' ? '' : 'WHERE COALESCE(archived, 0) = 0';
+  db.all(`SELECT * FROM consumables ${where} ORDER BY id`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     const parsed = rows.map(r => ({
       ...r,
+      archived: Boolean(r.archived),
       customFields: r.customFields ? JSON.parse(r.customFields) : {}
     }));
     res.json(parsed);
@@ -1310,48 +1354,76 @@ app.get('/consumables/next-id', (req, res) => {
 
 // Add new consumable
 app.post('/consumables', (req, res) => {
-  const { id, name, quantity, company, customFields } = req.body;
+  const { id, name, quantity, company, customFields } = req.body || {};
 
   if (!id || !name) {
     return res.status(400).json({ error: 'ID and name are required' });
+  }
+  const opening = quantity === undefined || quantity === null || quantity === '' ? 0 : toWholeNumber(quantity);
+  if (opening === null || opening < 0) {
+    return res.status(400).json({ error: 'Opening stock must be a whole number, 0 or more' });
   }
 
   const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
   const sql = `INSERT INTO consumables (id, name, quantity, company, customFields) VALUES (?, ?, ?, ?, ?)`;
 
-  db.run(sql, [id, name, quantity || 0, company || null, customFieldsJson], function (err) {
+  db.run(sql, [id, name, opening, company || null, customFieldsJson], function (err) {
     if (err) {
       const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
       return res.status(status).json({ error: err.message });
     }
     db.run(`INSERT OR IGNORE INTO used_consumable_ids (id) VALUES (?)`, [id]);
+    // The opening stock is the first row of the item's history, so the history adds up to the stock.
+    if (opening > 0) {
+      db.run(
+        `INSERT INTO consumable_transactions (consumableId, type, quantity, reason, performedBy) VALUES (?, 'opening', ?, 'Opening stock', ?)`,
+        [id, opening, req.session?.user?.email || 'system']
+      );
+    }
+    logAudit(req, 'consumable.created', 'consumable', id, { name, openingStock: opening });
     res.status(201).json({ id, inserted: true });
   });
 });
 
-// Update consumable
+// Update consumable. The quantity is left out on purpose: stock changes only through
+// /consumables/:id/transaction, so each change is in the history. Saving the edit form used to
+// write back the quantity it had loaded, silently undoing any stock change made since.
 app.put('/consumables/:id', (req, res) => {
   const { id } = req.params;
-  const { name, quantity, company, customFields } = req.body;
+  const { name, company, customFields } = req.body || {};
 
   if (!name) {
     return res.status(400).json({ error: 'Name is required' });
   }
 
   const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
-  const sql = `UPDATE consumables SET name = ?, quantity = ?, company = ?, customFields = ?, updatedAt = datetime('now') WHERE id = ?`;
+  const sql = `UPDATE consumables SET name = ?, company = ?, customFields = ?, updatedAt = datetime('now') WHERE id = ?`;
 
-  db.run(sql, [name, quantity || 0, company || null, customFieldsJson, id], function (err) {
+  db.run(sql, [name, company || null, customFieldsJson, id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: 'Consumable not found' });
+    logAudit(req, 'consumable.updated', 'consumable', id, { name });
     res.json({ updated: this.changes });
   });
 });
 
-// Delete consumable
+// "Delete" archives the item: it leaves the list and takes no more stock changes, but the item
+// and its history stay in the database, and it can be restored.
 app.delete('/consumables/:id', (req, res) => {
-  db.run(`DELETE FROM consumables WHERE id = ?`, req.params.id, function (err) {
+  db.run(`UPDATE consumables SET archived = 1, updatedAt = datetime('now') WHERE id = ?`, [req.params.id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
+    if (this.changes === 0) return res.status(404).json({ error: 'Consumable not found' });
+    logAudit(req, 'consumable.archived', 'consumable', req.params.id, {});
+    res.json({ archived: this.changes });
+  });
+});
+
+app.post('/consumables/:id/restore', (req, res) => {
+  db.run(`UPDATE consumables SET archived = 0, updatedAt = datetime('now') WHERE id = ?`, [req.params.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: 'Consumable not found' });
+    logAudit(req, 'consumable.restored', 'consumable', req.params.id, {});
+    res.json({ restored: this.changes });
   });
 });
 
@@ -1383,6 +1455,7 @@ app.post('/consumables/fields', (req, res) => {
         const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
         return res.status(status).json({ error: err.message });
       }
+      logAudit(req, 'consumable_field.added', 'consumable_field', fieldName, { fieldType, required: !!required });
       res.status(201).json({ fieldName, added: true });
     });
   });
@@ -1392,111 +1465,116 @@ app.post('/consumables/fields', (req, res) => {
 app.delete('/consumables/fields/:fieldName', (req, res) => {
   db.run(`DELETE FROM consumable_custom_fields WHERE fieldName = ?`, req.params.fieldName, function (err) {
     if (err) return res.status(500).json({ error: err.message });
+    if (this.changes > 0) logAudit(req, 'consumable_field.deleted', 'consumable_field', req.params.fieldName, {});
     res.json({ deleted: this.changes });
   });
 });
 
-// Reorder custom fields
+// Reorder custom fields. One UPDATE sets every position, so there is no BEGIN to collide with
+// another request's open transaction on the shared connection, and an empty list cannot leave
+// a transaction open.
 app.post('/consumables/fields/reorder', (req, res) => {
-  const { fieldNames } = req.body;
+  const { fieldNames } = req.body || {};
 
   if (!Array.isArray(fieldNames)) {
     return res.status(400).json({ error: 'fieldNames must be an array' });
   }
+  if (fieldNames.length === 0) return res.json({ success: true, updated: 0 });
 
-  db.serialize(() => {
-    db.run('BEGIN TRANSACTION');
-
-    let completed = 0;
-    let hasError = false;
-
-    fieldNames.forEach((fieldName, index) => {
-      db.run(
-        'UPDATE consumable_custom_fields SET sortOrder = ? WHERE fieldName = ?',
-        [index, fieldName],
-        (err) => {
-          if (err && !hasError) {
-            hasError = true;
-            db.run('ROLLBACK');
-            return res.status(500).json({ error: err.message });
-          }
-
-          completed++;
-          if (completed === fieldNames.length && !hasError) {
-            db.run('COMMIT');
-            res.json({ success: true, updated: completed });
-          }
-        }
-      );
-    });
-  });
+  const cases = fieldNames.map(() => 'WHEN ? THEN ?').join(' ');
+  const inList = fieldNames.map(() => '?').join(',');
+  const params = [...fieldNames.flatMap((fieldName, index) => [fieldName, index]), ...fieldNames];
+  db.run(
+    `UPDATE consumable_custom_fields SET sortOrder = CASE fieldName ${cases} END WHERE fieldName IN (${inList})`,
+    params,
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true, updated: this.changes });
+    }
+  );
 });
 
-// Add transaction (add or subtract quantity)
+// Change the stock: "add" (stock in), "subtract" (use from stock) or "adjust" (a stock count).
+// This is the only way the stock changes, so every change is in consumable_transactions.
+// Each change is one UPDATE that checks and moves the stock in the same statement, so two people
+// pressing at the same moment can neither both take the last unit nor crash the server. (Before,
+// each request read the stock, then opened its own BEGIN on the shared connection; the second
+// BEGIN failed with "cannot start a transaction within a transaction" and ended the process.)
 app.post('/consumables/:id/transaction', (req, res) => {
   const { id } = req.params;
-  const { type, quantity, reason } = req.body;
+  const { type, reason } = req.body || {};
 
-  if (!type || !['add', 'subtract'].includes(type)) {
-    return res.status(400).json({ error: 'Type must be "add" or "subtract"' });
+  if (!['add', 'subtract', 'adjust'].includes(type)) {
+    return res.status(400).json({ error: 'Type must be "add", "subtract" or "adjust"' });
   }
 
-  if (!quantity || quantity <= 0) {
-    return res.status(400).json({ error: 'Quantity must be a positive number' });
+  let sql, params, change;
+  if (type === 'adjust') {
+    // Set the stock to what was counted, but only while it is still what the person saw when
+    // they started counting, so a change made meanwhile is not overwritten.
+    const counted = toWholeNumber(req.body.countedQuantity);
+    const expected = toWholeNumber(req.body.expectedQuantity);
+    if (counted === null || counted < 0 || expected === null) {
+      return res.status(400).json({ error: 'Counted quantity must be a whole number, 0 or more' });
+    }
+    if (counted === expected) {
+      return res.status(400).json({ error: 'The count matches the current stock, so there is nothing to change' });
+    }
+    change = counted - expected;
+    sql = `UPDATE consumables SET quantity = ?, updatedAt = datetime('now')
+           WHERE id = ? AND COALESCE(archived, 0) = 0 AND COALESCE(quantity, 0) = ? RETURNING quantity`;
+    params = [counted, id, expected];
+  } else {
+    const qty = toWholeNumber(req.body.quantity);
+    if (qty === null || qty <= 0) {
+      return res.status(400).json({ error: 'Quantity must be a whole number above 0' });
+    }
+    change = type === 'add' ? qty : -qty;
+    sql = `UPDATE consumables SET quantity = COALESCE(quantity, 0) + ?, updatedAt = datetime('now')
+           WHERE id = ? AND COALESCE(archived, 0) = 0 AND COALESCE(quantity, 0) + ? >= 0 RETURNING quantity`;
+    params = [change, id, change];
   }
 
   const performedBy = req.session?.user?.email || 'system';
 
-  db.serialize(() => {
-    // Get current quantity
-    db.get('SELECT quantity FROM consumables WHERE id = ?', [id], (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!row) return res.status(404).json({ error: 'Consumable not found' });
+  db.get(sql, params, (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
 
-      const currentQty = row.quantity || 0;
-      const change = type === 'add' ? quantity : -quantity;
-      const newQty = currentQty + change;
-
-      if (newQty < 0) {
-        return res.status(400).json({ error: 'Insufficient quantity in stock' });
-      }
-
-      db.run('BEGIN TRANSACTION');
-
-      // Update consumable quantity
-      db.run(
-        'UPDATE consumables SET quantity = ?, updatedAt = datetime("now") WHERE id = ?',
-        [newQty, id],
-        function (err2) {
-          if (err2) {
-            db.run('ROLLBACK');
-            return res.status(500).json({ error: err2.message });
-          }
-
-          // Record transaction
-          db.run(
-            'INSERT INTO consumable_transactions (consumableId, type, quantity, reason, performedBy) VALUES (?, ?, ?, ?, ?)',
-            [id, type, quantity, reason || null, performedBy],
-            function (err3) {
-              if (err3) {
-                db.run('ROLLBACK');
-                return res.status(500).json({ error: err3.message });
-              }
-
-              db.run('COMMIT', (err4) => {
-                if (err4) return res.status(500).json({ error: err4.message });
-                res.json({
-                  success: true,
-                  previousQuantity: currentQty,
-                  newQuantity: newQty,
-                  transactionId: this.lastID
-                });
-              });
-            }
-          );
+    if (!row) {
+      // Nothing changed: find out why.
+      return db.get('SELECT quantity, archived FROM consumables WHERE id = ?', [id], (err2, item) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+        if (!item) return res.status(404).json({ error: 'Consumable not found' });
+        if (item.archived) return res.status(400).json({ error: 'This item is archived. Restore it before changing its stock.' });
+        if (type === 'adjust') {
+          return res.status(409).json({ error: `The stock changed to ${item.quantity || 0} while you were counting. Check the count again.` });
         }
-      );
-    });
+        return res.status(400).json({ error: `Insufficient quantity in stock. Only ${item.quantity || 0} available.` });
+      });
+    }
+
+    const newQty = row.quantity;
+    // add/subtract keep a positive quantity and the type gives the direction; an adjustment
+    // stores the signed difference the count made.
+    const txQty = type === 'adjust' ? change : Math.abs(change);
+    db.run(
+      'INSERT INTO consumable_transactions (consumableId, type, quantity, reason, performedBy) VALUES (?, ?, ?, ?, ?)',
+      [id, type, txQty, reason || null, performedBy],
+      function (err3) {
+        if (err3) {
+          // Put the stock back, so it never moves without a history row.
+          db.run('UPDATE consumables SET quantity = quantity - ? WHERE id = ?', [change, id]);
+          return res.status(500).json({ error: err3.message });
+        }
+        logAudit(req, `consumable.stock_${type}`, 'consumable', id, { change, newQuantity: newQty });
+        res.json({
+          success: true,
+          previousQuantity: newQty - change,
+          newQuantity: newQty,
+          transactionId: this.lastID
+        });
+      }
+    );
   });
 });
 
@@ -1504,7 +1582,7 @@ app.post('/consumables/:id/transaction', (req, res) => {
 app.get('/consumables/:id/transactions', (req, res) => {
   const { id } = req.params;
   db.all(
-    'SELECT * FROM consumable_transactions WHERE consumableId = ? ORDER BY createdAt DESC',
+    'SELECT * FROM consumable_transactions WHERE consumableId = ? ORDER BY createdAt DESC, id DESC',
     [id],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });

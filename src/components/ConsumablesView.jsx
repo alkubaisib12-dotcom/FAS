@@ -6,6 +6,7 @@ import {
   addConsumable,
   updateConsumable,
   deleteConsumable,
+  restoreConsumable,
   getConsumableFields,
 } from '../utils/api';
 import { exportConsumablesToExcel } from '../utils/exportUtils';
@@ -23,6 +24,7 @@ export default function ConsumablesView() {
   const [showTransactionModal, setShowTransactionModal] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [searchText, setSearchText] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -35,17 +37,21 @@ export default function ConsumablesView() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [showArchived]);
 
+  // Only the first load shows "Loading..."; later reloads keep the page (and an open stock
+  // window) on screen. Hiding the page unmounted the stock window, which then came back
+  // showing the stock from before the change.
   const loadData = async () => {
-    setLoading(true);
     try {
       const [items, fields] = await Promise.all([
-        getAllConsumables(),
+        getAllConsumables({ includeArchived: showArchived }),
         getConsumableFields()
       ]);
       setConsumables(items || []);
       setCustomFields(fields || []);
+      // Keep the open stock window on the item's current stock
+      setSelectedItem(prev => (prev && (items || []).find(i => i.id === prev.id)) || prev);
     } catch (err) {
       console.error('Error loading consumables:', err);
       alert('Failed to load consumables: ' + err.message);
@@ -83,14 +89,23 @@ export default function ConsumablesView() {
     setShowAddForm(true);
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this item?')) return;
+  const handleArchive = async (id) => {
+    if (!window.confirm('Archive this item?\n\nIt leaves the list and its stock can no longer change. Its history is kept, and you can restore it with "Show archived".')) return;
     try {
       await deleteConsumable(id);
-      alert('Item deleted');
+      alert('Item archived');
       loadData();
     } catch (err) {
-      alert('Delete failed: ' + err.message);
+      alert('Archive failed: ' + err.message);
+    }
+  };
+
+  const handleRestore = async (id) => {
+    try {
+      await restoreConsumable(id);
+      loadData();
+    } catch (err) {
+      alert('Restore failed: ' + err.message);
     }
   };
 
@@ -103,7 +118,9 @@ export default function ConsumablesView() {
 
     try {
       if (editingItem) {
-        await updateConsumable(formData.id, formData);
+        // Stock is not saved from this form; it changes only through "± Stock" so it is in the history
+        const { quantity, ...details } = formData;
+        await updateConsumable(formData.id, details);
         alert('Item updated');
       } else {
         await addConsumable(formData);
@@ -191,6 +208,14 @@ export default function ConsumablesView() {
         <button onClick={handleExport} style={btnStyle('export')}>
           Export to Excel
         </button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, cursor: 'pointer', color: '#374151' }}>
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Show archived
+        </label>
       </div>
 
       {/* Table */}
@@ -215,22 +240,27 @@ export default function ConsumablesView() {
               {filteredItems.map(item => (
                 <tr
                   key={item.id}
-                  style={{ borderBottom: '1px solid #ddd' }}
+                  style={{ borderBottom: '1px solid #ddd', color: item.archived ? '#9ca3af' : undefined }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f1f1')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = '')}
                 >
                   <td style={tdStyle}>{item.id}</td>
-                  <td style={tdStyle}>{item.name}</td>
+                  <td style={tdStyle}>
+                    {item.name}
+                    {item.archived && <span style={archivedTagStyle}>Archived</span>}
+                  </td>
                   <td style={tdStyle}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontWeight: 'bold', fontSize: 16 }}>{item.quantity}</span>
-                      <button
-                        onClick={() => handleOpenTransaction(item)}
-                        style={stockBtnStyle}
-                        title="Add/Subtract Stock"
-                      >
-                        ± Stock
-                      </button>
+                      {!item.archived && (
+                        <button
+                          onClick={() => handleOpenTransaction(item)}
+                          style={stockBtnStyle}
+                          title="Add, use or count stock"
+                        >
+                          ± Stock
+                        </button>
+                      )}
                     </div>
                   </td>
                   <td style={tdStyle}>{item.company || '-'}</td>
@@ -240,12 +270,20 @@ export default function ConsumablesView() {
                     </td>
                   ))}
                   <td style={tdStyle}>
-                    <button onClick={() => handleEdit(item)} style={actionBtnStyle('edit')}>
-                      Edit
-                    </button>
-                    <button onClick={() => handleDelete(item.id)} style={actionBtnStyle('delete')}>
-                      Delete
-                    </button>
+                    {item.archived ? (
+                      <button onClick={() => handleRestore(item.id)} style={actionBtnStyle('restore')}>
+                        Restore
+                      </button>
+                    ) : (
+                      <>
+                        <button onClick={() => handleEdit(item)} style={actionBtnStyle('edit')}>
+                          Edit
+                        </button>
+                        <button onClick={() => handleArchive(item.id)} style={actionBtnStyle('archive')}>
+                          Archive
+                        </button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -283,15 +321,33 @@ export default function ConsumablesView() {
               />
             </div>
 
-            <div style={fieldRow}>
-              <label style={labelStyle}>Quantity</label>
-              <input
-                type="number"
-                value={formData.quantity}
-                onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 0 })}
-                style={inputStyle}
-              />
-            </div>
+            {editingItem ? (
+              <div style={fieldRow}>
+                <label style={labelStyle}>Stock</label>
+                <input
+                  type="text"
+                  value={formData.quantity}
+                  readOnly
+                  style={{ ...inputStyle, backgroundColor: '#f0f0f0' }}
+                />
+                <span style={hintStyle}>
+                  Change stock with "± Stock" in the list, so every change is recorded in the history.
+                </span>
+              </div>
+            ) : (
+              <div style={fieldRow}>
+                <label style={labelStyle}>Opening stock</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={formData.quantity}
+                  onChange={(e) => setFormData({ ...formData, quantity: Math.max(0, parseInt(e.target.value) || 0) })}
+                  style={inputStyle}
+                />
+                <span style={hintStyle}>Recorded as the first entry in the item's history.</span>
+              </div>
+            )}
 
             <div style={fieldRow}>
               <label style={labelStyle}>Company / Vendor</label>
@@ -390,9 +446,25 @@ const actionBtnStyle = (type) => ({
   border: 'none',
   borderRadius: 4,
   cursor: 'pointer',
-  background: type === 'edit' ? '#2563eb' : '#dc3545',
+  background: type === 'edit' ? '#2563eb' : type === 'restore' ? '#16a34a' : '#6b7280',
   color: '#fff'
 });
+
+const archivedTagStyle = {
+  marginLeft: 8,
+  padding: '2px 6px',
+  borderRadius: 4,
+  fontSize: 11,
+  fontWeight: 600,
+  background: '#e5e7eb',
+  color: '#4b5563'
+};
+
+const hintStyle = {
+  marginTop: 4,
+  fontSize: 12,
+  color: '#6b7280'
+};
 
 const stockBtnStyle = {
   padding: '4px 8px',
