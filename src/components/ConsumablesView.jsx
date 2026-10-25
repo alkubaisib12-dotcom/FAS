@@ -1,5 +1,5 @@
 // src/components/ConsumablesView.jsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getAllConsumables,
   getNextConsumableId,
@@ -10,9 +10,23 @@ import {
   getConsumableFields,
 } from '../utils/api';
 import { exportConsumablesToExcel } from '../utils/exportUtils';
+import { consumableCategories } from '../data/consumableCategories';
 import Modal from './Modal';
 import CustomFieldManager from './CustomFieldManager';
 import TransactionModal from './TransactionModal';
+import ConsumableLog from './ConsumableLog';
+
+const OTHER_CATEGORY = '__other__'; // the "Other (new category)" choice in the category list
+
+// Columns with a ▾ filter, as on the asset list. Custom fields get one too, keyed "cf:<name>".
+const FILTER_FIELDS = { category: 'Category', stock: 'Stock', company: 'Company' };
+
+// The value an item is filtered on for a column
+function filterValue(item, field) {
+  if (field === 'stock') return item.archived ? 'Archived' : item.quantity > 0 ? 'In stock' : 'Out of stock';
+  if (field.startsWith('cf:')) return item.customFields?.[field.slice(3)];
+  return item[field];
+}
 
 export default function ConsumablesView() {
   const [consumables, setConsumables] = useState([]);
@@ -25,19 +39,42 @@ export default function ConsumablesView() {
   const [selectedItem, setSelectedItem] = useState(null);
   const [searchText, setSearchText] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [showLog, setShowLog] = useState(false);
+
+  // Column filters: { field: [selected values] }, and the open ▾ list
+  const [filter, setFilter] = useState({});
+  const [dropdown, setDropdown] = useState({ field: null, open: false });
+  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
+  const dropdownRef = useRef();
 
   // Form state
-  const [formData, setFormData] = useState({
-    id: '',
-    name: '',
-    quantity: 0,
-    company: '',
-    customFields: {}
-  });
+  const emptyForm = { id: '', name: '', category: '', quantity: 0, company: '', customFields: {} };
+  const [formData, setFormData] = useState(emptyForm);
+  const [otherCategory, setOtherCategory] = useState(''); // typed when "Other" is chosen
+  const idPreviewSeq = useRef(0); // ignores an ID preview that arrives after a newer one
+
+  // The standard categories, then any other category already used by an item
+  const categoryOptions = useMemo(() => {
+    const known = new Set(consumableCategories.map(c => c.toLowerCase()));
+    const extra = [...new Set(consumables.map(i => i.category).filter(Boolean))]
+      .filter(c => !known.has(c.toLowerCase()))
+      .sort((a, b) => a.localeCompare(b));
+    return [...consumableCategories, ...extra];
+  }, [consumables]);
 
   useEffect(() => {
     loadData();
   }, [showArchived]);
+
+  // Close the ▾ list on an outside click or Esc
+  useEffect(() => {
+    if (!dropdown.open) return undefined;
+    const onDocClick = (e) => { if (dropdownRef.current && !dropdownRef.current.contains(e.target)) closeDropdown(); };
+    const onKey = (e) => { if (e.key === 'Escape') closeDropdown(); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey); };
+  }, [dropdown.open]);
 
   // Only the first load shows "Loading..."; later reloads keep the page (and an open stock
   // window) on screen. Hiding the page unmounted the stock window, which then came back
@@ -60,33 +97,59 @@ export default function ConsumablesView() {
     }
   };
 
-  const handleAddNew = async () => {
-    try {
-      const nextId = await getNextConsumableId();
-      setFormData({
-        id: nextId,
-        name: '',
-        quantity: 0,
-        company: '',
-        customFields: {}
-      });
-      setEditingItem(null);
-      setShowAddForm(true);
-    } catch (err) {
-      alert('Failed to generate ID: ' + err.message);
-    }
+  // A new item's ID comes from its category (Toner → TON-004), so it is shown once one is chosen
+  const handleAddNew = () => {
+    idPreviewSeq.current++;
+    setFormData(emptyForm);
+    setOtherCategory('');
+    setEditingItem(null);
+    setShowAddForm(true);
   };
 
   const handleEdit = (item) => {
     setFormData({
       id: item.id,
       name: item.name,
+      category: item.category || '',
       quantity: item.quantity,
       company: item.company || '',
       customFields: item.customFields || {}
     });
+    setOtherCategory('');
     setEditingItem(item);
     setShowAddForm(true);
+  };
+
+  // Show the next ID for the chosen category. The add itself takes the next free number,
+  // so the saved ID can differ if someone adds to the same category first.
+  const previewId = async (category) => {
+    const seq = ++idPreviewSeq.current;
+    if (!category) {
+      setFormData(prev => ({ ...prev, id: '' }));
+      return;
+    }
+    try {
+      const id = await getNextConsumableId(category);
+      if (seq === idPreviewSeq.current) setFormData(prev => ({ ...prev, id }));
+    } catch (err) {
+      if (seq === idPreviewSeq.current) setFormData(prev => ({ ...prev, id: '' }));
+    }
+  };
+
+  const handleCategoryChange = (value) => {
+    setFormData(prev => ({ ...prev, category: value }));
+    if (editingItem) return; // an existing item keeps its ID
+    if (value === OTHER_CATEGORY) {
+      setOtherCategory('');
+      previewId('');
+    } else {
+      previewId(value);
+    }
+  };
+
+  const handleOtherCategoryChange = (value) => {
+    setOtherCategory(value);
+    if (!editingItem) previewId(value.trim());
   };
 
   const handleArchive = async (id) => {
@@ -115,16 +178,23 @@ export default function ConsumablesView() {
       alert('Name is required');
       return;
     }
+    const category = formData.category === OTHER_CATEGORY ? otherCategory.trim() : formData.category;
+    if (!editingItem && !category) {
+      alert('Choose a category, or choose "Other" and type a new one');
+      return;
+    }
 
     try {
       if (editingItem) {
         // Stock is not saved from this form; it changes only through "± Stock" so it is in the history
         const { quantity, ...details } = formData;
-        await updateConsumable(formData.id, details);
+        await updateConsumable(formData.id, { ...details, category });
         alert('Item updated');
       } else {
-        await addConsumable(formData);
-        alert('Item added');
+        // No id: the server gives the next free ID for the category
+        const { id, ...details } = formData;
+        const result = await addConsumable({ ...details, category });
+        alert(`Item added as ${result.id}`);
       }
       setShowAddForm(false);
       loadData();
@@ -134,8 +204,10 @@ export default function ConsumablesView() {
   };
 
   const handleCancel = () => {
+    idPreviewSeq.current++;
     setShowAddForm(false);
-    setFormData({ id: '', name: '', quantity: 0, company: '', customFields: {} });
+    setFormData(emptyForm);
+    setOtherCategory('');
     setEditingItem(null);
   };
 
@@ -146,16 +218,78 @@ export default function ConsumablesView() {
     }));
   };
 
-  // Filter consumables
+  /* ---- Search and column filters (same behaviour as the asset list) ---- */
+  const filterLabel = (field) => FILTER_FIELDS[field] || field.slice(3);
+
+  // Every value the column has, plus anything already ticked, so a selection never disappears
+  const uniqueValues = (field) => {
+    if (field === 'stock') {
+      return ['In stock', 'Out of stock', ...(showArchived ? ['Archived'] : [])];
+    }
+    const vals = consumables
+      .map(item => filterValue(item, field))
+      .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+      .map(String);
+    return Array.from(new Set([...vals, ...(filter[field] || [])])).sort((a, b) => a.localeCompare(b));
+  };
+
+  const toggleDropdown = (e, field) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDropdown({ field, open: true });
+    setDropdownPosition({ top: rect.bottom, left: rect.left });
+  };
+  const closeDropdown = () => setDropdown(prev => ({ ...prev, open: false }));
+
+  const handleCheckboxChange = (field, value) => {
+    setFilter(prev => {
+      const current = prev[field] || [];
+      const updated = current.includes(value) ? current.filter(v => v !== value) : [...current, value];
+      return { ...prev, [field]: updated };
+    });
+  };
+  const clearFilter = (field) => setFilter(prev => ({ ...prev, [field]: [] }));
+  const clearAllFilters = () => {
+    setSearchText('');
+    setFilter({});
+  };
+
+  const search = searchText.trim().toLowerCase();
   const filteredItems = consumables.filter(item => {
-    if (!searchText.trim()) return true;
-    const search = searchText.toLowerCase();
-    return (
-      (item.id || '').toLowerCase().includes(search) ||
-      (item.name || '').toLowerCase().includes(search) ||
-      (item.company || '').toLowerCase().includes(search)
+    const columnsMatch = Object.entries(filter).every(
+      ([field, vals]) => !vals.length || vals.includes(String(filterValue(item, field) ?? ''))
     );
+    if (!columnsMatch) return false;
+    if (!search) return true;
+    return [item.id, item.name, item.category, item.company, ...Object.values(item.customFields || {})]
+      .some(v => String(v ?? '').toLowerCase().includes(search));
   });
+
+  // "Filtering by:" chips, one per search or ticked value, each removable
+  const activeChips = [];
+  if (search) activeChips.push({ key: 'search', label: `Search: "${searchText.trim()}"`, onRemove: () => setSearchText('') });
+  Object.entries(filter).forEach(([field, vals]) => {
+    vals.forEach(value => activeChips.push({
+      key: `${field}:${value}`,
+      label: `${filterLabel(field)}: ${value}`,
+      onRemove: () => handleCheckboxChange(field, value),
+    }));
+  });
+  const hasActiveFilters = activeChips.length > 0;
+
+  // A column header that opens its ▾ filter list
+  const filterTh = (field, label) => {
+    const count = (filter[field] || []).length;
+    return (
+      <th
+        key={field}
+        style={{ ...thStyle, cursor: 'pointer', whiteSpace: 'nowrap', background: count ? 'rgba(15, 23, 42, 0.25)' : undefined }}
+        onClick={(e) => toggleDropdown(e, field)}
+        title={`Filter by ${label}`}
+      >
+        {label}{count ? ` (${count})` : ''} ▾
+      </th>
+    );
+  };
 
   const handleExport = () => {
     if (filteredItems.length === 0) {
@@ -191,10 +325,10 @@ export default function ConsumablesView() {
       </div>
 
       {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 20, alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 20, alignItems: 'center' }}>
         <input
           type="text"
-          placeholder="Search by ID, Name, Company..."
+          placeholder="Search by ID, Name, Category, Company..."
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           style={{ padding: '8px', width: 300, borderRadius: 5, border: '1px solid #ccc' }}
@@ -208,6 +342,9 @@ export default function ConsumablesView() {
         <button onClick={handleExport} style={btnStyle('export')}>
           Export to Excel
         </button>
+        <button onClick={() => setShowLog(true)} style={btnStyle('secondary')}>
+          Stock Log
+        </button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, cursor: 'pointer', color: '#374151' }}>
           <input
             type="checkbox"
@@ -218,79 +355,149 @@ export default function ConsumablesView() {
         </label>
       </div>
 
-      {/* Table */}
-      {filteredItems.length === 0 ? (
-        <p style={{ fontStyle: 'italic', color: '#999' }}>No items found.</p>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
-            <thead style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%)' }}>
-              <tr>
-                <th style={thStyle}>ID</th>
-                <th style={thStyle}>Name</th>
-                <th style={thStyle}>Quantity</th>
-                <th style={thStyle}>Company</th>
-                {customFields.map(field => (
-                  <th key={field.fieldName} style={thStyle}>{field.fieldName}</th>
-                ))}
-                <th style={thStyle}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredItems.map(item => (
-                <tr
-                  key={item.id}
-                  style={{ borderBottom: '1px solid #ddd', color: item.archived ? '#9ca3af' : undefined }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f1f1')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = '')}
-                >
-                  <td style={tdStyle}>{item.id}</td>
-                  <td style={tdStyle}>
-                    {item.name}
-                    {item.archived && <span style={archivedTagStyle}>Archived</span>}
-                  </td>
-                  <td style={tdStyle}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontWeight: 'bold', fontSize: 16 }}>{item.quantity}</span>
-                      {!item.archived && (
-                        <button
-                          onClick={() => handleOpenTransaction(item)}
-                          style={stockBtnStyle}
-                          title="Add, use or count stock"
-                        >
-                          ± Stock
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                  <td style={tdStyle}>{item.company || '-'}</td>
-                  {customFields.map(field => (
-                    <td key={field.fieldName} style={tdStyle}>
-                      {item.customFields?.[field.fieldName] || '-'}
-                    </td>
-                  ))}
-                  <td style={tdStyle}>
-                    {item.archived ? (
-                      <button onClick={() => handleRestore(item.id)} style={actionBtnStyle('restore')}>
-                        Restore
-                      </button>
-                    ) : (
-                      <>
-                        <button onClick={() => handleEdit(item)} style={actionBtnStyle('edit')}>
-                          Edit
-                        </button>
-                        <button onClick={() => handleArchive(item.id)} style={actionBtnStyle('archive')}>
-                          Archive
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Active search/filter indicator — always visible while filtering */}
+      {hasActiveFilters && (
+        <div style={activeBarStyle}>
+          <span style={{ fontSize: 13, fontWeight: 'bold', color: '#555' }}>Filtering by:</span>
+          {activeChips.map(chip => (
+            <span key={chip.key} style={chipStyle}>
+              {chip.label}
+              <button onClick={chip.onRemove} style={chipRemoveStyle} aria-label={`Remove ${chip.label}`} title="Remove this filter">×</button>
+            </span>
+          ))}
+          <button onClick={clearAllFilters} style={clearAllBtnStyle}>Clear all</button>
         </div>
       )}
+
+      {/* Result count — visible even when nothing matches */}
+      <div style={{ marginBottom: 12, fontSize: 14, color: '#555' }}>
+        {hasActiveFilters
+          ? (filteredItems.length === 0
+              ? 'No items match your search/filters.'
+              : `${filteredItems.length} result${filteredItems.length === 1 ? '' : 's'} found`)
+          : `${consumables.length} item${consumables.length === 1 ? '' : 's'} total`}
+      </div>
+
+      {/* Table — headers with ▾ open a filter list */}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+          <thead style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%)' }}>
+            <tr>
+              <th style={thStyle}>ID</th>
+              <th style={thStyle}>Name</th>
+              {filterTh('category', 'Category')}
+              {filterTh('stock', 'Quantity')}
+              {filterTh('company', 'Company')}
+              {customFields.map(field => filterTh(`cf:${field.fieldName}`, field.fieldName))}
+              <th style={thStyle}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredItems.length === 0 && (
+              <tr>
+                <td colSpan={6 + customFields.length} style={{ padding: 30, textAlign: 'center', fontStyle: 'italic', color: '#999' }}>
+                  {hasActiveFilters ? (
+                    <>
+                      <div>No items match your current search/filters.</div>
+                      <button onClick={clearAllFilters} style={{ ...clearAllBtnStyle, marginTop: 10 }}>
+                        Clear search &amp; filters
+                      </button>
+                    </>
+                  ) : 'No items yet. Add your first item.'}
+                </td>
+              </tr>
+            )}
+            {filteredItems.map(item => (
+              <tr
+                key={item.id}
+                style={{ borderBottom: '1px solid #ddd', color: item.archived ? '#9ca3af' : undefined }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f1f1')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '')}
+              >
+                <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{item.id}</td>
+                <td style={tdStyle}>
+                  {item.name}
+                  {item.archived && <span style={archivedTagStyle}>Archived</span>}
+                </td>
+                <td style={tdStyle}>{item.category || '-'}</td>
+                <td style={tdStyle}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 'bold', fontSize: 16 }}>{item.quantity}</span>
+                    {!item.archived && (
+                      <button
+                        onClick={() => handleOpenTransaction(item)}
+                        style={stockBtnStyle}
+                        title="Add, use or count stock"
+                      >
+                        ± Stock
+                      </button>
+                    )}
+                  </div>
+                </td>
+                <td style={tdStyle}>{item.company || '-'}</td>
+                {customFields.map(field => (
+                  <td key={field.fieldName} style={tdStyle}>
+                    {item.customFields?.[field.fieldName] || '-'}
+                  </td>
+                ))}
+                <td style={tdStyle}>
+                  {item.archived ? (
+                    <button onClick={() => handleRestore(item.id)} style={actionBtnStyle('restore')}>
+                      Restore
+                    </button>
+                  ) : (
+                    <>
+                      <button onClick={() => handleEdit(item)} style={actionBtnStyle('edit')}>
+                        Edit
+                      </button>
+                      <button onClick={() => handleArchive(item.id)} style={actionBtnStyle('archive')}>
+                        Archive
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* The ▾ filter list for the column header that was clicked */}
+      {dropdown.open && (
+        <div
+          ref={dropdownRef}
+          style={{
+            position: 'fixed', top: dropdownPosition.top, left: dropdownPosition.left,
+            zIndex: 1000, background: '#fff', border: '1px solid #ccc',
+            borderRadius: 5, padding: 10, boxShadow: '0 4px 10px rgba(0,0,0,0.1)',
+            maxHeight: 320, overflowY: 'auto', minWidth: 160
+          }}
+        >
+          {uniqueValues(dropdown.field).length === 0 && (
+            <div style={{ fontSize: 12, color: '#999', padding: '4px 0' }}>No values available</div>
+          )}
+          {uniqueValues(dropdown.field).map(val => (
+            <div key={val} style={{ marginBottom: 8 }}>
+              <label style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={(filter[dropdown.field] || []).includes(val)}
+                  onChange={() => handleCheckboxChange(dropdown.field, val)}
+                  style={{ marginRight: 6 }}
+                />
+                {val}
+              </label>
+            </div>
+          ))}
+          <div style={{ textAlign: 'center', marginTop: 10 }}>
+            <button onClick={() => clearFilter(dropdown.field)} style={{ fontSize: 12, color: '#007bff', border: 'none', background: 'transparent', cursor: 'pointer' }}>Clear Filter</button>
+            <button onClick={closeDropdown} style={{ fontSize: 12, marginLeft: 10, color: '#28a745', border: 'none', background: 'transparent', cursor: 'pointer' }}>OK</button>
+          </div>
+        </div>
+      )}
+
+      {/* Stock log: every stock movement and item change, newest first */}
+      {showLog && <ConsumableLog onClose={() => setShowLog(false)} />}
 
       {/* Add/Edit Form Modal */}
       <Modal isOpen={showAddForm} onClose={handleCancel}>
@@ -300,13 +507,44 @@ export default function ConsumablesView() {
           </h3>
           <form onSubmit={handleSubmit}>
             <div style={fieldRow}>
-              <label style={labelStyle}>ID *</label>
+              <label style={labelStyle}>Category {editingItem ? '' : '*'}</label>
+              <select
+                value={formData.category}
+                onChange={(e) => handleCategoryChange(e.target.value)}
+                style={inputStyle}
+                required={!editingItem}
+                autoFocus={!editingItem}
+              >
+                <option value="">{editingItem ? '(no category)' : 'Choose a category'}</option>
+                {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+                <option value={OTHER_CATEGORY}>Other (new category)</option>
+              </select>
+              {formData.category === OTHER_CATEGORY && (
+                <input
+                  type="text"
+                  value={otherCategory}
+                  onChange={(e) => handleOtherCategoryChange(e.target.value)}
+                  placeholder="New category name, e.g. Projector Lamps"
+                  style={{ ...inputStyle, marginTop: 6 }}
+                  required
+                  autoFocus
+                />
+              )}
+              {editingItem && <span style={hintStyle}>Changing the category keeps the item's ID.</span>}
+            </div>
+
+            <div style={fieldRow}>
+              <label style={labelStyle}>ID</label>
               <input
                 type="text"
                 value={formData.id}
                 readOnly
+                placeholder="Choose a category to generate the ID"
                 style={{ ...inputStyle, backgroundColor: '#f0f0f0' }}
               />
+              {!editingItem && formData.id && (
+                <span style={hintStyle}>The next free number for this category is given when you save.</span>
+              )}
             </div>
 
             <div style={fieldRow}>
@@ -317,7 +555,7 @@ export default function ConsumablesView() {
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 style={inputStyle}
                 required
-                autoFocus
+                autoFocus={!!editingItem}
               />
             </div>
 
@@ -436,7 +674,8 @@ const btnStyle = (variant) => ({
   cursor: 'pointer',
   background: variant === 'primary' ? '#2563eb' : variant === 'export' ? '#0ea5e9' : '#6c757d',
   color: '#fff',
-  fontWeight: '600'
+  fontWeight: '600',
+  whiteSpace: 'nowrap'
 });
 
 const actionBtnStyle = (type) => ({
@@ -465,6 +704,12 @@ const hintStyle = {
   fontSize: 12,
   color: '#6b7280'
 };
+
+// "Filtering by:" bar and chips — the same look as the asset list
+const activeBarStyle = { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12, padding: '8px 10px', background: '#eef4ff', border: '1px solid #cfe0ff', borderRadius: 6 };
+const chipStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #b6d0ff', borderRadius: 999, padding: '4px 10px', fontSize: 13, color: '#1d4ed8' };
+const chipRemoveStyle = { border: 'none', background: 'transparent', color: '#1d4ed8', cursor: 'pointer', fontWeight: 'bold', fontSize: 14, lineHeight: 1, padding: 0 };
+const clearAllBtnStyle = { fontSize: 13, color: '#dc3545', border: '1px solid #dc3545', background: '#fff', borderRadius: 5, padding: '4px 10px', cursor: 'pointer' };
 
 const stockBtnStyle = {
   padding: '4px 8px',

@@ -288,6 +288,7 @@ function makeConsumablesSheet(rows, customFields = []) {
     const base = {
       'ID': r?.id || '',
       'Name': r?.name || '',
+      'Category': r?.category || '',
       'Quantity': r?.quantity || 0,
       'Company': r?.company || '',
     };
@@ -314,6 +315,37 @@ export function exportConsumablesToExcel(consumables, customFields = [], fileNam
   XLSX.utils.book_append_sheet(book, sheet, safeSheetName('Consumables'));
   const buffer = XLSX.write(book, { bookType: 'xlsx', type: 'array' });
   saveAs(new Blob([buffer]), fileName);
+}
+
+// Export the store log (rows from GET /consumables/log). actions maps each action to
+// { title, sign } as the log screen shows it; times are written in local time.
+export function exportConsumableLogToExcel(rows, actions = {}) {
+  const localTime = (v) => {
+    const s = String(v || '');
+    const d = new Date(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s) ? `${s.replace(' ', 'T')}Z` : s);
+    return isNaN(d) ? s : d.toLocaleString('en-GB');
+  };
+  const data = (rows || []).map((r) => {
+    const a = actions[r.action] || {};
+    const qty = a.sign === null || a.sign === undefined || r.quantity === null || r.quantity === undefined
+      ? '' : a.sign * r.quantity;
+    return {
+      'Date': localTime(r.time),
+      'Item ID': r.itemId || '',
+      'Item': r.itemName || '',
+      'Category': r.category || '',
+      'Action': a.title || r.action,
+      'Quantity': qty,
+      'Reason': r.reason || '',
+      'By': r.user || '',
+    };
+  });
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(data), safeSheetName('Stock Log'));
+  const buffer = XLSX.write(book, { bookType: 'xlsx', type: 'array' });
+  const today = new Date();
+  const stamp = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  saveAs(new Blob([buffer]), `consumables_log_${stamp}.xlsx`);
 }
 
 // Build combined workbook with assets and consumables sheets

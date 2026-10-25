@@ -230,13 +230,15 @@ export async function getAllConsumables({ includeArchived = false } = {}) {
   return request(`/consumables${includeArchived ? '?includeArchived=1' : ''}`, { method: 'GET' });
 }
 
-// Get next consumable ID
-export async function getNextConsumableId() {
-  const { id } = await request('/consumables/next-id', { method: 'GET' });
+// Preview the next consumable ID for a category (Toner → TON-004). Not reserved: adding an item
+// without an id lets the server pick the next free one.
+export async function getNextConsumableId(category = '') {
+  const qs = category ? `?category=${encodeURIComponent(category)}` : '';
+  const { id } = await request(`/consumables/next-id${qs}`, { method: 'GET' });
   return id;
 }
 
-// Add new consumable
+// Add new consumable. Leave out id to get the next ID for its category; returns { id }.
 export async function addConsumable(consumable) {
   return request('/consumables', {
     method: 'POST',
@@ -315,4 +317,11 @@ export async function adjustConsumableStock(id, countedQuantity, expectedQuantit
 export async function getConsumableTransactions(id) {
   const encoded = encodeURIComponent(id);
   return request(`/consumables/${encoded}/transactions`, { method: 'GET' });
+}
+
+// The store log: stock movements and item changes across all items, newest first.
+// from (a Date) starts it at that time; leave it out for everything.
+export async function getConsumableLog({ from } = {}) {
+  const qs = from ? `?from=${encodeURIComponent(from.toISOString())}` : '';
+  return request(`/consumables/log${qs}`, { method: 'GET' });
 }

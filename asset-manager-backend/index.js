@@ -308,6 +308,13 @@ db.run(`ALTER TABLE consumables ADD COLUMN archived INTEGER DEFAULT 0`, (err) =>
   }
 });
 
+// An item's category also decides its ID prefix (Toner → TON-001); see consumablePrefix.
+db.run(`ALTER TABLE consumables ADD COLUMN category TEXT`, (err) => {
+  if (err && !String(err.message).includes('duplicate column')) {
+    console.error('Failed to add category column:', err.message);
+  }
+});
+
 db.run(`CREATE TABLE IF NOT EXISTS used_consumable_ids ( id TEXT PRIMARY KEY )`);
 
 db.run(`CREATE TABLE IF NOT EXISTS consumable_transactions (
@@ -1337,51 +1344,75 @@ app.get('/consumables', (req, res) => {
   });
 });
 
-// Get next consumable ID
+// An item's ID prefix: the first 3 letters or digits of its category, as asset IDs take theirs
+// from the asset type (Toner → TON-001, Cables → CAB-001). No category, or one with no Latin
+// letters (an Arabic name), keeps the original CONS-001 numbering.
+function consumablePrefix(category) {
+  const p = String(category || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 3);
+  return p || 'CONS';
+}
+
+// The next number for an ID prefix. used_consumable_ids keeps every ID ever given out
+// (archived items included), so a number is never handed out twice.
+// Parameters: prefix length + 2 (where the number starts), then the GLOB pattern "PREFIX-[0-9]*".
+const NEXT_CONSUMABLE_NUMBER = `
+  SELECT COALESCE(MAX(CAST(substr(x.id, ?) AS INTEGER)), 0) + 1
+  FROM (SELECT id FROM used_consumable_ids UNION SELECT id FROM consumables) x
+  WHERE x.id GLOB ?`;
+
+// Preview of the next ID for a category (?category=Toner). Not reserved: the add itself takes
+// the next free number, so it can differ if someone else adds an item in the same category first.
 app.get('/consumables/next-id', (req, res) => {
-  db.all(`SELECT id FROM used_consumable_ids WHERE id LIKE 'CONS-%'`, [], (err, rows) => {
+  const prefix = consumablePrefix(req.query.category);
+  db.get(`SELECT (${NEXT_CONSUMABLE_NUMBER}) AS n`, [prefix.length + 2, `${prefix}-[0-9]*`], (err, row) => {
     if (err) return res.status(500).json({ error: err.message });
-    const numbers = rows
-      .map(row => {
-        const m = row.id.match(/^CONS-(\d+)$/);
-        return m ? parseInt(m[1], 10) : null;
-      })
-      .filter(n => n !== null);
-    const next = numbers.length ? Math.max(...numbers) + 1 : 1;
-    res.json({ id: `CONS-${String(next).padStart(3, '0')}` });
+    res.json({ id: `${prefix}-${String(row.n).padStart(3, '0')}` });
   });
 });
 
-// Add new consumable
+// Add new consumable. Without an id in the body, the next ID for its category is chosen in the
+// same INSERT, so two people adding at the same moment cannot get the same ID.
 app.post('/consumables', (req, res) => {
-  const { id, name, quantity, company, customFields } = req.body || {};
+  const { id, name, quantity, company, category, customFields } = req.body || {};
 
-  if (!id || !name) {
-    return res.status(400).json({ error: 'ID and name are required' });
+  if (!name) {
+    return res.status(400).json({ error: 'Name is required' });
   }
   const opening = quantity === undefined || quantity === null || quantity === '' ? 0 : toWholeNumber(quantity);
   if (opening === null || opening < 0) {
     return res.status(400).json({ error: 'Opening stock must be a whole number, 0 or more' });
   }
 
+  const cat = typeof category === 'string' && category.trim() ? category.trim() : null;
   const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
-  const sql = `INSERT INTO consumables (id, name, quantity, company, customFields) VALUES (?, ?, ?, ?, ?)`;
+  const values = [name, opening, company || null, cat, customFieldsJson];
+  let sql, params;
+  if (id) {
+    sql = `INSERT INTO consumables (id, name, quantity, company, category, customFields) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`;
+    params = [id, ...values];
+  } else {
+    const prefix = consumablePrefix(cat);
+    sql = `INSERT INTO consumables (id, name, quantity, company, category, customFields)
+           SELECT ? || '-' || printf('%03d', (${NEXT_CONSUMABLE_NUMBER})), ?, ?, ?, ?, ? RETURNING id`;
+    params = [prefix, prefix.length + 2, `${prefix}-[0-9]*`, ...values];
+  }
 
-  db.run(sql, [id, name, opening, company || null, customFieldsJson], function (err) {
+  db.get(sql, params, (err, row) => {
     if (err) {
       const status = String(err.code).includes('CONSTRAINT') ? 409 : 500;
       return res.status(status).json({ error: err.message });
     }
-    db.run(`INSERT OR IGNORE INTO used_consumable_ids (id) VALUES (?)`, [id]);
+    const newId = row.id;
+    db.run(`INSERT OR IGNORE INTO used_consumable_ids (id) VALUES (?)`, [newId]);
     // The opening stock is the first row of the item's history, so the history adds up to the stock.
     if (opening > 0) {
       db.run(
         `INSERT INTO consumable_transactions (consumableId, type, quantity, reason, performedBy) VALUES (?, 'opening', ?, 'Opening stock', ?)`,
-        [id, opening, req.session?.user?.email || 'system']
+        [newId, opening, req.session?.user?.email || 'system']
       );
     }
-    logAudit(req, 'consumable.created', 'consumable', id, { name, openingStock: opening });
-    res.status(201).json({ id, inserted: true });
+    logAudit(req, 'consumable.created', 'consumable', newId, { name, category: cat, openingStock: opening });
+    res.status(201).json({ id: newId, inserted: true });
   });
 });
 
@@ -1390,16 +1421,18 @@ app.post('/consumables', (req, res) => {
 // write back the quantity it had loaded, silently undoing any stock change made since.
 app.put('/consumables/:id', (req, res) => {
   const { id } = req.params;
-  const { name, company, customFields } = req.body || {};
+  const { name, company, category, customFields } = req.body || {};
 
   if (!name) {
     return res.status(400).json({ error: 'Name is required' });
   }
 
+  // Changing the category keeps the item's ID: the ID is already on its label.
+  const cat = typeof category === 'string' && category.trim() ? category.trim() : null;
   const customFieldsJson = customFields ? JSON.stringify(customFields) : null;
-  const sql = `UPDATE consumables SET name = ?, company = ?, customFields = ?, updatedAt = datetime('now') WHERE id = ?`;
+  const sql = `UPDATE consumables SET name = ?, company = ?, category = ?, customFields = ?, updatedAt = datetime('now') WHERE id = ?`;
 
-  db.run(sql, [name, company || null, customFieldsJson, id], function (err) {
+  db.run(sql, [name, company || null, cat, customFieldsJson, id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     if (this.changes === 0) return res.status(404).json({ error: 'Consumable not found' });
     logAudit(req, 'consumable.updated', 'consumable', id, { name });
@@ -1584,6 +1617,41 @@ app.get('/consumables/:id/transactions', (req, res) => {
   db.all(
     'SELECT * FROM consumable_transactions WHERE consumableId = ? ORDER BY createdAt DESC, id DESC',
     [id],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows || []);
+    }
+  );
+});
+
+// The store log, newest first: every stock movement (consumable_transactions) and every item
+// added, edited, archived or restored (audit_log). An added item's row carries its opening stock,
+// so the separate "opening" stock row is left out. Optional ?from=<ISO time> starts it at a date.
+// action is add | subtract | adjust (stock) or created | updated | archived | restored (item).
+app.get('/consumables/log', (req, res) => {
+  const from = req.query.from || null;
+  const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit) || 2000));
+  db.all(
+    `SELECT * FROM (
+       SELECT 'stock' AS kind, t.id AS seq, t.createdAt AS time, t.consumableId AS itemId, c.name AS itemName,
+              c.category, t.type AS action, t.quantity, t.reason, t.performedBy AS user
+       FROM consumable_transactions t
+       LEFT JOIN consumables c ON c.id = t.consumableId
+       WHERE t.type <> 'opening'
+       UNION ALL
+       SELECT 'item', a.id, a.timestamp, a.entity_id, c.name, c.category,
+              substr(a.action, 12), json_extract(a.details_json, '$.openingStock'), NULL, a.user_email
+       FROM audit_log a
+       LEFT JOIN consumables c ON c.id = a.entity_id
+       WHERE a.entity_type = 'consumable'
+         AND a.action IN ('consumable.created', 'consumable.updated', 'consumable.archived', 'consumable.restored')
+     )
+     WHERE ? IS NULL OR time >= datetime(?)
+     -- Times are to the second: within one second, an item's creation comes first, then rows
+     -- in the order they were written
+     ORDER BY time DESC, (action = 'created') ASC, seq DESC
+     LIMIT ?`,
+    [from, from, limit],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json(rows || []);
