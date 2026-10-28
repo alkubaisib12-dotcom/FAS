@@ -1,6 +1,7 @@
 // src/components/Dashboard.jsx
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { getAllAssets } from '../utils/api';
+import { getAllAssets, getExpiringDocuments } from '../utils/api';
+import { todayLocal } from '../utils/archive';
 import {
   ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, Tooltip, LabelList,
@@ -32,6 +33,8 @@ export default function Dashboard() {
 
   const [drill, setDrill] = useState(null);   // { type, key, assets[] }
   const closeDrill = () => setDrill(null);
+  // Archive contracts, licenses and warranties ending soon: { expiring: [...], expired: [...] }
+  const [docsEnding, setDocsEnding] = useState({ expiring: [], expired: [] });
 
   const load = async () => {
     setLoading(true);
@@ -39,6 +42,9 @@ export default function Dashboard() {
       const data = await getAllAssets();
       setAssets(Array.isArray(data) ? data : (data?.items ?? []));
       setLastUpdated(new Date());
+      getExpiringDocuments(todayLocal())
+        .then((r) => setDocsEnding({ expiring: r?.expiring || [], expired: r?.expired || [] }))
+        .catch(() => setDocsEnding({ expiring: [], expired: [] }));
     } finally {
       setLoading(false);
     }
@@ -501,6 +507,37 @@ export default function Dashboard() {
           </div>
         )}
       </Card>
+
+      {/* Archive documents ending soon */}
+      <div style={{ marginTop: 16 }}>
+        <Card title={`Contracts, Licenses & Warranties Ending Soon (next 90 days)${docsEnding.expired.length ? ` · ${docsEnding.expired.length} already expired` : ''}`}>
+          {docsEnding.expiring.length === 0 ? <Empty>✓ All clear — no archived documents ending in the next 90 days</Empty> : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead style={{ background: '#f3f4f6' }}>
+                  <tr>
+                    {['Document','Type','Subject','Company','Ends','Days Left'].map(h => (
+                      <th key={h} style={th(false)}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {docsEnding.expiring.map(d => (
+                    <tr key={d.id} style={{ borderBottom: '1px solid #eee', background: d.daysLeft <= 14 ? '#fff1f2' : 'transparent' }}>
+                      <td style={td(false)}>{d.id}</td>
+                      <td style={td(false)}>{d.type}</td>
+                      <td style={td(false)}>{d.subject}</td>
+                      <td style={td(false)}>{d.party||'-'}</td>
+                      <td style={td(false)}>{d.endDate}</td>
+                      <td style={{ ...td(false), fontWeight: d.daysLeft<=14?700:400, color: d.daysLeft<=14?'#b91c1c': d.daysLeft<=30?'#d97706':undefined }}>{d.daysLeft}d</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      </div>
 
       {/* Drill-down modal */}
       <DrillModal drill={drill} summary={drillSummary} onClose={closeDrill} toNum={toNum} />

@@ -13,6 +13,7 @@ const session = require('express-session');
 const ldap = require('ldapjs');
 const multer = require('multer');
 const { resolveDataPaths, checkDataDir } = require('./dataDir');
+const { registerDocumentRoutes } = require('./documents');
 
 /* ── OCR (tesseract.js) — optional; degrades gracefully if not installed ── */
 let _tesseractCreateWorker = null;
@@ -673,7 +674,7 @@ if (fs.existsSync(BUILD_DIR)) {
 }
 
 /* --------------------------- Auth Guard (global) ------------------------- */
-const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/scan', '/uploads', '/manageengine'];
+const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/documents', '/scan', '/uploads', '/manageengine'];
 
 app.use((req, res, next) => {
   if (
@@ -949,6 +950,7 @@ app.put('/assets/:id', (req, res) => {
         // Migrate all child records to the new assetId BEFORE deleting the old row
         db.run(`UPDATE asset_images   SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
         db.run(`UPDATE asset_invoices SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+        db.run(`UPDATE document_assets SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
         db.run(`DELETE FROM assets WHERE assetId = ?`, [oldId], function (err) {
           if (err) {
             db.run('ROLLBACK');
@@ -1025,7 +1027,11 @@ app.get('/assets/label-stats', (req, res) => {
 app.delete('/assets/:id', (req, res) => {
   db.run(`DELETE FROM assets WHERE assetId = ?`, req.params.id, function (err) {
     if (err) return res.status(500).json({ error: err.message });
-    if (this.changes > 0) logAudit(req, 'asset.deleted', 'asset', req.params.id, {});
+    if (this.changes > 0) {
+      // The archive documents stay; only their link to this asset goes
+      db.run(`DELETE FROM document_assets WHERE assetId = ?`, [req.params.id]);
+      logAudit(req, 'asset.deleted', 'asset', req.params.id, {});
+    }
     res.json({ deleted: this.changes });
   });
 });
@@ -1831,6 +1837,9 @@ app.delete('/assets/:assetId/images/:imageId', (req, res) => {
     }
   );
 });
+
+/* ---------------------- Document archive (documents.js) ---------------------- */
+registerDocumentRoutes(app, { db, documentsDir: dataPaths.documentsDir, tessdataDir: TESSDATA_DIR, logAudit });
 
 /* --------- SPA catch-all: authenticated users navigating directly to a route --- */
 if (fs.existsSync(BUILD_DIR)) {

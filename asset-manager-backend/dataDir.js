@@ -22,6 +22,8 @@ function resolveDataPaths(env = process.env, backendDir = __dirname) {
     uploadsDir,
     imagesDir: path.join(uploadsDir, 'images'),
     invoicesDir: path.join(uploadsDir, 'invoices'),
+    // Scanned archive documents. Not under uploads, which is served without a login.
+    documentsDir: path.join(dataDir, 'documents'),
     // Where the shared data folder layout puts the database: the data folder sits beside the
     // app folders, so <apps>\FAS\asset-manager-backend keeps its data in <apps>\data\FAS.
     // Only used to notice a lost DATA_DIR line, never read or written.

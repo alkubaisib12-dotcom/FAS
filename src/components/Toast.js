@@ -41,7 +41,7 @@ export default function Toast({ message, type = 'success', onClose }) {
         }}
         aria-label="Close"
       >
-        ❌
+        ×
       </button>
     </div>
   );

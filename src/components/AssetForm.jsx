@@ -13,6 +13,7 @@ import { groups } from '../data/groups';
 import { categories } from '../data/categories';
 import { API_URL } from '../utils/api';
 import { departments } from '../data/departments';
+import AssetDocuments from './AssetDocuments';
 const resolveUrl = (u) => (u && u.startsWith('/') ? `${API_URL}${u}` : u);
 const DEPT_OTHER = 'أخرى'; // unified value for "Other" department
 export default function AssetForm({ onSave, editData }) {
@@ -721,6 +722,8 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
           )}
         </fieldset>
       ))}
+
+      {isEdit && <AssetDocuments assetId={editData?.assetId} fieldsetStyle={fieldsetStyle} legendStyle={legendStyle} />}
 
       <div style={{ textAlign: 'center' }}>
         <button type="submit" style={{ ...submitButtonStyle, opacity: isSubmitDisabled ? 0.7 : 1 }} disabled={isSubmitDisabled}>

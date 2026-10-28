@@ -437,3 +437,34 @@ export async function exportWithConsumablesIfAny(assetRows, {
   const zipBlob = await zip.generateAsync({ type: 'blob' });
   saveAs(zipBlob, zipName);
 }
+
+// Export archive documents (rows from GET /documents with page 0): one row per document
+export function exportDocumentsToExcel(docs, fileName) {
+  const STATUS_NAMES = { active: 'Active', expiring: 'Expiring soon', expired: 'Expired', none: '' };
+  const data = (docs || []).map((d) => ({
+    'ID': d.id,
+    'Type': d.type,
+    'Subject': d.subject,
+    'Date': d.docDate,
+    'Reference No.': d.referenceNo || '',
+    'Company / From / To': d.party || '',
+    'Department': d.department || '',
+    'Amount': d.amount ?? '',
+    'Currency': d.amount !== null && d.amount !== undefined ? (d.currency || 'BHD') : '',
+    'Start Date': d.startDate || '',
+    'End Date': d.endDate || '',
+    'Status': d.archived ? 'Archived' : STATUS_NAMES[d.status] || '',
+    'Keywords': d.keywords || '',
+    'Paper Kept At': d.paperLocation || '',
+    'Linked Assets': d.assetIds || '',
+    'Scans': d.fileCount || 0,
+    'Recorded By': d.createdBy || '',
+    'Notes': d.notes || '',
+  }));
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(data), safeSheetName('Documents'));
+  const buffer = XLSX.write(book, { bookType: 'xlsx', type: 'array' });
+  const t = new Date();
+  const stamp = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+  saveAs(new Blob([buffer]), fileName || `archive_${stamp}.xlsx`);
+}

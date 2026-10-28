@@ -7,6 +7,7 @@ import ManageEngineModal from './components/ManageEngineModal';
 import Dashboard from './components/Dashboard';
 import ConsumablesView from './components/ConsumablesView';
 import LabelingView from './components/LabelingView';
+import ArchiveView from './components/ArchiveView';
 import { authMe, login, logout } from './utils/api';
 import './styles/app.css'; // <- all visual styles live here
 
@@ -58,7 +59,7 @@ function App() {
 
   /* -------- App view state -------- */
   const [refresh, setRefresh] = useState(Date.now());
-  const [view, setView] = useState('table'); // 'table' | 'form' | 'dashboard' | 'consumables' | 'labeling'
+  const [view, setView] = useState('table'); // 'table' | 'form' | 'dashboard' | 'consumables' | 'labeling' | 'archive'
   const [scanOpen, setScanOpen] = useState(false);
   const [meOpen, setMeOpen] = useState(false);
   const [editData, setEditData] = useState(null);
@@ -73,6 +74,7 @@ function App() {
   const goToDashboard = () => setView('dashboard');
   const goToConsumables = () => setView('consumables');
   const goToLabeling = () => setView('labeling');
+  const goToArchive = () => setView('archive');
 
   const triggerRefresh = () => {
     setRefresh(Date.now());
@@ -191,6 +193,17 @@ function App() {
               >
                 Consumables
               </button>
+              <button
+                className="btn"
+                onClick={goToArchive}
+                style={{
+                  background: 'linear-gradient(135deg, #0f766e 0%, #14b8a6 100%)',
+                  color: '#fff',
+                  fontWeight: '600'
+                }}
+              >
+                Archive
+              </button>
               <button className="btn btn-accent" onClick={goToFormAdd}>Add New Asset</button>
             </div>
           </div>
@@ -270,6 +283,19 @@ function App() {
           </div>
 
           <LabelingView />
+        </>
+      )}
+
+      {view === 'archive' && (
+        <>
+          <div className="toolbar">
+            <div className="toolbar-left">
+              <button className="btn" onClick={goToTable}>← Back to List</button>
+            </div>
+            <div className="toolbar-right" />
+          </div>
+
+          <ArchiveView />
         </>
       )}
     </div>

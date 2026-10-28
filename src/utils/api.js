@@ -325,3 +325,116 @@ export async function getConsumableLog({ from } = {}) {
   const qs = from ? `?from=${encodeURIComponent(from.toISOString())}` : '';
   return request(`/consumables/log${qs}`, { method: 'GET' });
 }
+
+/* ===== Document archive API ===== */
+// Types: [{ name, code, group }] — the standard ones, then any other type already used
+export function getDocumentTypes() {
+  return request('/documents/types', { method: 'GET' });
+}
+
+export function getDocumentFilterOptions({ includeArchived = false } = {}) {
+  return request(`/documents/filter-options${includeArchived ? '?includeArchived=1' : ''}`, { method: 'GET' });
+}
+
+// The archive list. Filters are arrays; page>0 → { items, total, page, pageSize }, page 0 → every match.
+// today (YYYY-MM-DD, local) decides which documents are expiring or expired.
+export function getDocuments({ page = 1, pageSize = 50, search, type, year, party, department, status, includeArchived, today } = {}) {
+  const params = new URLSearchParams();
+  params.set('page', String(page));
+  params.set('pageSize', String(pageSize));
+  if (search) params.set('search', search);
+  if (type?.length) params.set('type', type.join(','));
+  if (year?.length) params.set('year', year.join(','));
+  if (party?.length) params.set('party', party.join(','));
+  if (department?.length) params.set('department', department.join(','));
+  if (status?.length) params.set('status', status.join(','));
+  if (includeArchived) params.set('includeArchived', '1');
+  if (today) params.set('today', today);
+  return request(`/documents?${params}`, { method: 'GET' });
+}
+
+export function getDocument(id) {
+  return request(`/documents/${encodeURIComponent(id)}`, { method: 'GET' });
+}
+
+// Preview of the ID a new document of this type and date will get (taken when saving)
+export async function getNextDocumentId(type, date) {
+  const params = new URLSearchParams({ type });
+  if (date) params.set('date', date);
+  const { id } = await request(`/documents/next-id?${params}`, { method: 'GET' });
+  return id;
+}
+
+// details: the form fields; fileIds: scans from "To file"; assetIds: linked assets. Returns { id }.
+export function createDocument(details) {
+  return request('/documents', { method: 'POST', body: JSON.stringify(details) });
+}
+
+export function updateDocument(id, details) {
+  return request(`/documents/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(details) });
+}
+
+export function archiveDocument(id) {
+  return request(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function restoreDocument(id) {
+  return request(`/documents/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+}
+
+const scansForm = (files) => {
+  const fd = new FormData();
+  Array.from(files || []).forEach((f) => fd.append('files', f));
+  return fd;
+};
+
+// Scans waiting to be filed ("To file")
+export function getInbox() {
+  return request('/documents/inbox', { method: 'GET' });
+}
+
+export function uploadScans(files) {
+  return request('/documents/inbox', { method: 'POST', body: scansForm(files) });
+}
+
+export function discardScan(fileId) {
+  return request(`/documents/inbox/${fileId}`, { method: 'DELETE' });
+}
+
+// Add scans to a saved document: new files, and/or scans from "To file" by id
+export function addDocumentFiles(id, files, inboxFileIds = []) {
+  const fd = scansForm(files);
+  if (inboxFileIds.length) fd.append('fileIds', inboxFileIds.join(','));
+  return request(`/documents/${encodeURIComponent(id)}/files`, { method: 'POST', body: fd });
+}
+
+export function removeDocumentFile(id, fileId) {
+  return request(`/documents/${encodeURIComponent(id)}/files/${fileId}`, { method: 'DELETE' });
+}
+
+export function readScanTextAgain(fileId) {
+  return request(`/documents/files/${fileId}/read-text`, { method: 'POST' });
+}
+
+// Address of a scan, to show in the page or (download=true) to save
+export function documentFileUrl(fileId, download = false) {
+  return `${API_URL}/documents/files/${fileId}${download ? '?download=1' : ''}`;
+}
+
+export function getExpiringDocuments(today) {
+  return request(`/documents/expiring${today ? `?today=${today}` : ''}`, { method: 'GET' });
+}
+
+export function getAssetDocuments(assetId) {
+  return request(`/assets/${encodeURIComponent(assetId)}/documents`, { method: 'GET' });
+}
+
+// One page of a scan as an image about `width` pixels wide (PDF pages are drawn by the server)
+export function documentPageUrl(fileId, page = 1, width = 1100) {
+  return `${API_URL}/documents/files/${fileId}/pages/${page}?w=${width}`;
+}
+
+// { pages } of a scan
+export function getScanMeta(fileId) {
+  return request(`/documents/files/${fileId}/meta`, { method: 'GET' });
+}

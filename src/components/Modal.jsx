@@ -1,6 +1,7 @@
 import React from 'react';
 
-export default function Modal({ isOpen, onClose, children }) {
+// maxWidth (optional) widens the window, e.g. for the archive's scan preview beside a form
+export default function Modal({ isOpen, onClose, children, maxWidth }) {
   if (!isOpen) return null;
 
   return (
@@ -8,7 +9,7 @@ export default function Modal({ isOpen, onClose, children }) {
       style={backdropStyle}
       onClick={(e) => { if (e.target === e.currentTarget && onClose) onClose(); }}
     >
-      <div style={modalStyle}>
+      <div style={maxWidth ? { ...modalStyle, maxWidth } : modalStyle}>
         {onClose && (
           <button onClick={onClose} style={closeBtnStyle} aria-label="Close">✕</button>
         )}
