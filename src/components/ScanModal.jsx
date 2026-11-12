@@ -2,11 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import Modal from './Modal';
 import { API_URL, bulkAddAssets } from '../utils/api';
+import HolderCheck from './HolderCheck';
 
 export default function ScanModal({ isOpen, onClose, onImported }) {
   const [target, setTarget] = useState('');
   const [loading, setLoading] = useState(false);
-  const [devices, setDevices] = useState([]);
+  const [devices, setDevices] = useState([]);   // new devices, can be imported
+  const [known, setKnown] = useState([]);       // already in FAS (scanner marks them _known): holder check only
   const [selected, setSelected] = useState({});
   const [logs, setLogs] = useState([]);
   const [source, setSource] = useState(null);
@@ -23,6 +25,7 @@ export default function ScanModal({ isOpen, onClose, onImported }) {
   const handleScan = () => {
     setError('');
     setDevices([]);
+    setKnown([]);
     setSelected({});
     setLogs([]);
     if (!target.trim()) { setError('Enter an IP, range, or CIDR.'); return; }
@@ -37,10 +40,13 @@ const es = new EventSource(url, { withCredentials: true });    setSource(es);
 
     es.addEventListener('result', (e) => {
       try {
-        const list = JSON.parse(e.data || '[]');
-        setDevices(Array.isArray(list) ? list : []);
-        setSelected(Object.fromEntries((Array.isArray(list) ? list : []).map(d => [d.assetId, true])));
-        pushLog(`Received ${Array.isArray(list) ? list.length : 0} devices.`);
+        const all = JSON.parse(e.data || '[]');
+        const list = Array.isArray(all) ? all : [];
+        const fresh = list.filter(d => !d._known);
+        setDevices(fresh);
+        setKnown(list.filter(d => d._known));
+        setSelected(Object.fromEntries(fresh.map(d => [d.assetId, true])));
+        pushLog(`Received ${fresh.length} new devices, ${list.length - fresh.length} already in FAS.`);
       } catch {
         setError('Invalid result from scanner.');
       } finally {
@@ -159,6 +165,9 @@ const es = new EventSource(url, { withCredentials: true });    setSource(es);
           )}
         </div>
       </div>
+
+      {/* Who is logged on to each device found, new or already in FAS, compared with its holder */}
+      <HolderCheck devices={[...known, ...devices]} />
     </Modal>
   );
 }

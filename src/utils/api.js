@@ -55,6 +55,50 @@ export function logout() {
   return request('/auth/logout', { method: 'POST' });
 }
 
+/* ===== People and places (who holds an asset) ===== */
+// { people: [{ login, name, email, department, title, disabled, inAd, assets }],
+//   places: [{ id, name, archived, assets }], sync: { at, count, byUser, error } }
+export function getPeople() {
+  return request('/people', { method: 'GET' });
+}
+
+export function createPlace(name) {
+  return request('/places', { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function updatePlace(id, { name, archived } = {}) {
+  return request(`/places/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ name, archived }) });
+}
+
+// One person's (kind 'person', key = AD login) or place's (kind 'place', key = id) page:
+// { kind, holder, current: [assets + since], history: [changes] }
+export function getHolder(kind, key) {
+  return request(`/holders/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`, { method: 'GET' });
+}
+
+// Who had one asset, newest first
+export function getAssetHolders(assetId) {
+  return request(`/assets/${encodeURIComponent(assetId)}/holders`, { method: 'GET' });
+}
+
+// Assets still held by people whose AD account is disabled or gone: { people: [{..., assets}], assets }
+export function getLeavers() {
+  return request('/people/leavers', { method: 'GET' });
+}
+
+// devices: [{ serialNumber, macAddress, hostName, user }] → differences between the user logged on
+// to each device and its holder in FAS. Changes nothing.
+export function checkHolders(devices) {
+  return request('/holders/check', { method: 'POST', body: JSON.stringify({ devices }) });
+}
+
+// Change only the holder of one asset
+export function setAssetHolder(assetId, { assigneeKind, assigneeKey, source }) {
+  return request(`/assets/${encodeURIComponent(assetId)}/holder`, {
+    method: 'POST', body: JSON.stringify({ assigneeKind, assigneeKey, source }),
+  });
+}
+
 /* ===== Duplicate check ===== */
 export function checkSerialDuplicate(serialNumber, excludeId) {
   const params = new URLSearchParams({ serialNumber });
@@ -67,7 +111,8 @@ export function checkSerialDuplicate(serialNumber, excludeId) {
 // Get assets — optional pagination + server-side search/filter.
 // page=0 or omitted → returns all as flat array (backward compat / export).
 // page>0            → returns { items, total, page, pageSize }.
-export async function getAllAssets({ page, pageSize, search, group, assetType, department, labeled } = {}) {
+// holder: 'unlinked' → only assets whose holder is old typed text not tied to a person or place.
+export async function getAllAssets({ page, pageSize, search, group, assetType, department, labeled, holder } = {}) {
   const params = new URLSearchParams();
   if (page)                        params.set('page',       String(page));
   if (pageSize)                    params.set('pageSize',   String(pageSize));
@@ -76,6 +121,7 @@ export async function getAllAssets({ page, pageSize, search, group, assetType, d
   if (assetType?.length)           params.set('assetType',  assetType.join(','));
   if (department?.length)          params.set('department', department.join(','));
   if (labeled === true || labeled === false) params.set('labeled', labeled ? '1' : '0');
+  if (holder)                      params.set('holder', holder);
   const qs = params.toString();
   return request(`/assets${qs ? `?${qs}` : ''}`, { method: 'GET' });
 }

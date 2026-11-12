@@ -1,6 +1,6 @@
 // src/components/Dashboard.jsx
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { getAllAssets, getExpiringDocuments } from '../utils/api';
+import { getAllAssets, getExpiringDocuments, getLeavers } from '../utils/api';
 import { todayLocal } from '../utils/archive';
 import {
   ResponsiveContainer,
@@ -24,7 +24,7 @@ const SLIDE_TITLES = {
   actions:  'Action Items',
 };
 
-export default function Dashboard() {
+export default function Dashboard({ onOpenPeople }) {
   const [assets, setAssets]             = useState([]);
   const [loading, setLoading]           = useState(true);
   const [presentation, setPresentation] = useState(false);
@@ -35,6 +35,8 @@ export default function Dashboard() {
   const closeDrill = () => setDrill(null);
   // Archive contracts, licenses and warranties ending soon: { expiring: [...], expired: [...] }
   const [docsEnding, setDocsEnding] = useState({ expiring: [], expired: [] });
+  // Assets still held by people whose AD account is disabled or gone (people.js)
+  const [leavers, setLeavers] = useState({ people: [], assets: 0 });
 
   const load = async () => {
     setLoading(true);
@@ -45,6 +47,7 @@ export default function Dashboard() {
       getExpiringDocuments(todayLocal())
         .then((r) => setDocsEnding({ expiring: r?.expiring || [], expired: r?.expired || [] }))
         .catch(() => setDocsEnding({ expiring: [], expired: [] }));
+      getLeavers().then(setLeavers).catch(() => setLeavers({ people: [], assets: 0 }));
     } finally {
       setLoading(false);
     }
@@ -95,6 +98,7 @@ export default function Dashboard() {
     const retiredCount = assets.filter(a => (a.status || '').toLowerCase() === 'retired').length;
     const unassigned   = assets.filter(a => !a.assignedTo || !String(a.assignedTo).trim());
     const missingSerial= assets.filter(a => !a.serialNumber || !String(a.serialNumber).trim());
+    const unlinked     = assets.filter(a => a.assigneeKind === 'text');
     const percentActive= total ? (activeCount / total * 100) : 0;
 
     let totalValue = 0, currentValue = 0;
@@ -155,7 +159,7 @@ export default function Dashboard() {
       .map(([name,value],i) => ({ name, value, fill: SERIES[i%SERIES.length] }));
 
     return {
-      total, activeCount, retiredCount, unassigned, missingSerial,
+      total, activeCount, retiredCount, unassigned, missingSerial, unlinked,
       percentActive, totalValue, currentValue, avgAgeYears,
       expiringSoon, expiredCount,
       byGroup, byStatus, byDept, byType, byMonth, topTypesByCost
@@ -181,7 +185,7 @@ export default function Dashboard() {
 
   if (loading) return <div style={{ padding: 16 }}>Loading dashboard…</div>;
 
-  const { total, activeCount, retiredCount, unassigned, missingSerial,
+  const { total, activeCount, retiredCount, unassigned, missingSerial, unlinked,
           percentActive, totalValue, currentValue, avgAgeYears,
           expiringSoon, expiredCount,
           byGroup, byStatus, byDept, byType, byMonth, topTypesByCost } = metrics;
@@ -362,6 +366,10 @@ export default function Dashboard() {
             onClick={() => setDrill({ type: 'unassigned', key: 'Unassigned', assets: unassigned })} />
           <ActionCard count={missingSerial.length} label="Missing serial numbers"       color="#64748b" icon="🔖"
             onClick={() => setDrill({ type: 'missing', key: 'Missing Serial', assets: missingSerial })} />
+          <ActionCard count={leavers.assets} label={`Held by people who left (${leavers.people.length})`} color="#b91c1c" icon="🚪"
+            onClick={() => onOpenPeople && onOpenPeople()} />
+          <ActionCard count={unlinked.length} label="Holder not linked to AD or a place" color="#d97706" icon="🔗"
+            onClick={() => setDrill({ type: 'unlinked', key: 'Holder not linked', assets: unlinked })} />
         </div>
       </Card>
 
@@ -651,7 +659,7 @@ function FullChart({ children }) {
 /* ── Small atoms ── */
 function KPI({ title, value, accent = '#2563eb', big = false }) {
   return (
-    <div style={{ background: `linear-gradient(180deg,${hexA(accent,0.08)} 0%,#fff 100%)`, border: `1px solid ${hexA(accent,0.25)}`, borderRadius: 12, padding: big ? 20 : 14, boxShadow: '0 2px 10px rgba(0,0,0,0.04)' }}>
+    <div style={{ background: '#fff', border: `1px solid ${hexA(accent,0.25)}`, borderRadius: 12, padding: big ? 20 : 14, boxShadow: '0 2px 10px rgba(0,0,0,0.04)' }}>
       <div style={{ fontSize: big ? 14 : 12, color: '#6b7280', marginBottom: 4 }}>{title}</div>
       <div style={{ fontSize: big ? 34 : 26, fontWeight: 800, color: '#0f172a' }}>{value}</div>
     </div>

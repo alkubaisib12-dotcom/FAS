@@ -314,7 +314,7 @@ export default function ConsumablesView() {
     <div style={{ padding: 20 }}>
       {/* Consumables Header */}
       <div style={{
-        background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)',
+        background: '#1e40af',
         padding: '16px 24px',
         borderRadius: 6,
         marginBottom: 20
@@ -381,7 +381,7 @@ export default function ConsumablesView() {
       {/* Table — headers with ▾ open a filter list */}
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
-          <thead style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%)' }}>
+          <thead style={{ background: '#2563eb' }}>
             <tr>
               <th style={thStyle}>ID</th>
               <th style={thStyle}>Name</th>

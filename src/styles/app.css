@@ -55,7 +55,7 @@ body { margin: 0; font-family: var(--font); color: var(--text); background: var(
 .auth-logo {
   width: 32px; height: 32px; border-radius: 8px;
   display: grid; place-items: center; color: #fff; font-weight: 800;
-  background: linear-gradient(135deg, var(--brand) 0%, var(--accent) 100%);
+  background: var(--brand);
 }
 .auth-title { margin: 0; font-size: 20px; }
 .auth-subtitle { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
@@ -123,7 +123,7 @@ body { margin: 0; font-family: var(--font); color: var(--text); background: var(
   color: #fff;
   border-radius: 10px;
   cursor: pointer;
-  background: linear-gradient(180deg, var(--brand) 0%, var(--brand-2) 100%);
+  background: var(--brand);
   font-weight: 700;
   letter-spacing: .2px;
 }
@@ -160,7 +160,7 @@ body { margin: 0; font-family: var(--font); color: var(--text); background: var(
 .ar-banner {
   display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
   padding: 18px 24px; margin-bottom: 16px; border-radius: 8px; color: #fff;
-  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  background: #0f766e;
 }
 .ar-banner h2 { margin: 0; font-size: 24px; font-weight: 600; }
 .ar-banner p { margin: 3px 0 0; font-size: 13px; opacity: .92; }
@@ -202,7 +202,7 @@ button.ar-stat:hover { background: rgba(255, 255, 255, .26); }
 
 .ar-table-wrap { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, .08); }
 .ar-table { width: 100%; border-collapse: collapse; }
-.ar-table thead { background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%); }
+.ar-table thead { background: #0f766e; }
 .ar-table th { padding: 12px; text-align: left; color: #fff; font-size: 14px; font-weight: 700; white-space: nowrap; }
 .ar-table th.ar-filter { cursor: pointer; }
 .ar-table th.ar-filter.on { background: rgba(15, 23, 42, .25); }

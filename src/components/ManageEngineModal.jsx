@@ -2,6 +2,7 @@
 import React, { useState, useRef } from 'react';
 import Modal from './Modal';
 import { API_URL, bulkAddAssets, bulkNextIds, checkSerials } from '../utils/api';
+import HolderCheck from './HolderCheck';
 
 // ── CSV parser ────────────────────────────────────────────────────────────────
 function parseCSV(text) {
@@ -680,6 +681,11 @@ export default function ManageEngineModal({ isOpen, onClose, onImported }) {
           </table>
         </div>
       )}
+
+      {/* ── Who uses each device, compared with FAS (changes nothing until "Use") ── */}
+      <HolderCheck devices={mePairedActive
+        ? mePairs.flatMap(p => [p.pc, ...(p.monitor ? [p.monitor] : [])])
+        : devices} />
 
       {/* ── Error / Result ── */}
       {error && (

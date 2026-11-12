@@ -14,6 +14,7 @@ const ldap = require('ldapjs');
 const multer = require('multer');
 const { resolveDataPaths, checkDataDir } = require('./dataDir');
 const { registerDocumentRoutes } = require('./documents');
+const { createPeople, entryToObject } = require('./people');
 
 /* ── OCR (tesseract.js) — optional; degrades gracefully if not installed ── */
 let _tesseractCreateWorker = null;
@@ -461,7 +462,9 @@ const ASSET_COLUMNS = new Set([
   'powerConsumption','purchaseDate','warrantyExpiry','eol','maintenanceExpiry',
   'cost','depreciation','residualValue','status','condition','usagePurpose',
   'accessLevel','licenseKey','complianceStatus','documentation','remarks',
-  'lastAuditDate','disposedDate','replacementPlan','invoiceUrl'
+  'lastAuditDate','disposedDate','replacementPlan','invoiceUrl',
+  // Who holds it (people.js): assignedTo is the name shown, written by the server from these two
+  'assigneeKind','assigneeKey'
 ]);
 
 // Columns a bulk import (Scan Network, ManageEngine) fills, in INSERT order.
@@ -470,8 +473,34 @@ const BULK_COLUMNS = [
   'ipAddress','macAddress','osFirmware','cpu','ram','storage','portDetails','powerConsumption',
   'purchaseDate','warrantyExpiry','eol','maintenanceExpiry','cost','depreciation','residualValue',
   'status','condition','usagePurpose','accessLevel','licenseKey','complianceStatus','documentation',
-  'remarks','lastAuditDate','disposedDate','replacementPlan'
+  'remarks','lastAuditDate','disposedDate','replacementPlan','assigneeKind','assigneeKey'
 ];
+
+// Who holds an asset: AD people and FAS's places list (people.js)
+const people = createPeople({ db, logAudit });
+
+// The network scanner fills every field it could not read with "Unknown" (and the brand with
+// "Unknown Unknown"). Saved as text, that put 5 PCs under one serial number "Unknown", which
+// breaks the serial duplicate check, and listed "Unknown" as a holder. Store nothing instead.
+function dropPlaceholders(obj) {
+  for (const k of Object.keys(obj || {})) {
+    if (typeof obj[k] === 'string' && /^\s*(unknown\s*)+$/i.test(obj[k])) obj[k] = '';
+  }
+  return obj;
+}
+
+// Real serial numbers already in FAS (placeholders like "Not Applicable" left out), mapped to the
+// asset that has each, for the imports' duplicate check.
+function existingSerialKeys() {
+  return new Promise((resolve, reject) => {
+    db.all(`SELECT assetId, serialNumber FROM assets WHERE TRIM(COALESCE(serialNumber, '')) <> ''`, [], (err, rows) => {
+      if (err) return reject(err);
+      const m = new Map();
+      for (const r of rows) { const k = people.serialKey(r.serialNumber); if (k && !m.has(k)) m.set(k, r.assetId); }
+      resolve(m);
+    });
+  });
+}
 
 function sanitizeAssetPayload(obj) {
   const out = {};
@@ -582,7 +611,9 @@ async function ldapAuthenticate(usernameOrEmail, password) {
     const entries = [];
     client.search(base, options, (err, res) => {
       if (err) return reject(err);
-      res.on('searchEntry', (entry) => entries.push(entry.object));
+      // ldapjs 3 entries have no .object, so this read undefined and the session name fell back
+      // to the email address.
+      res.on('searchEntry', (entry) => entries.push(entryToObject(entry)));
       res.on('error', reject);
       res.on('end', () => resolve(entries));
     });
@@ -602,7 +633,11 @@ async function ldapAuthenticate(usernameOrEmail, password) {
       });
       const user = results[0] || {};
       const email = (user.mail || user.userPrincipalName || raw || '').toLowerCase();
-      try { client.unbind(); } catch {}
+      // The same bound connection refreshes FAS's list of AD people (people.js), in the
+      // background, and unbinds when done, so signing in is not slowed and no service-account
+      // password is stored. Only IT signs in to FAS, and IT accounts can read the directory.
+      if (isAllowedEmailOrUsername(email)) people.refreshFromLdap(client, LDAP_BASE_DN, email);
+      else { try { client.unbind(); } catch {} }
       return { email, displayName: user.displayName || email };
     } catch (e) {
       lastErr = e;
@@ -674,7 +709,7 @@ if (fs.existsSync(BUILD_DIR)) {
 }
 
 /* --------------------------- Auth Guard (global) ------------------------- */
-const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/documents', '/scan', '/uploads', '/manageengine'];
+const API_PREFIXES = ['/health', '/auth', '/assets', '/consumables', '/documents', '/scan', '/uploads', '/manageengine', '/people', '/places', '/holders'];
 
 app.use((req, res, next) => {
   if (
@@ -719,7 +754,7 @@ app.get('/assets', (req, res) => {
   const whereParts = [], whereParams = [];
 
   if (search) {
-    const cols = ['a.assetId','a.brandModel','a.serialNumber','a.assignedTo',
+    const cols = ['a.assetId','a.brandModel','a.serialNumber','a.assignedTo','a.assigneeKey',
                   'a.department','a.assetType','a."group"','a.hostName',
                   'a.ipAddress','a.macAddress','a.remarks'];
     // Also search OCR text extracted from uploaded images
@@ -735,6 +770,8 @@ app.get('/assets', (req, res) => {
     whereParts.push(`COALESCE(a.labeled, 0) = ?`);
     whereParams.push(req.query.labeled === '1' ? 1 : 0);
   }
+  // holder=unlinked: assets whose holder is old typed text not yet tied to a person or place
+  if (req.query.holder === 'unlinked') whereParts.push(`a.assigneeKind = 'text'`);
 
   const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
 
@@ -795,7 +832,7 @@ app.get('/assets/filter-options', (req, res) => {
 });
 
 // Add new asset — normalization + INSERT OR IGNORE (skip on dup)
-app.post('/assets', (req, res) => {
+app.post('/assets', async (req, res) => {
   const body = { ...req.body };
 
   // Compose brandModel from brand/model if provided (legacy UI fields)
@@ -805,10 +842,24 @@ app.post('/assets', (req, res) => {
   }
 
   // Keep only columns that exist on `assets`; drops invoiceUrls etc.
-  const asset = sanitizeAssetPayload(body);
+  const asset = dropPlaceholders(sanitizeAssetPayload(body));
 
   const missing = requireMinimalFields(asset);
   if (missing.length) return res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` });
+
+  try {
+    await people.applyAssignee(asset);
+    // The network scanner posts here with its token. A device whose real serial number is
+    // already in FAS is the same device, even when DHCP gave it a new IP, so it is skipped.
+    // (The form keeps its own warning; people may knowingly save there.)
+    if (!req.session?.user && hasScanToken(req) && people.serialKey(asset.serialNumber)) {
+      const known = await existingSerialKeys();
+      const hit = known.get(people.serialKey(asset.serialNumber));
+      if (hit) return res.status(200).json({ skipped: true, id: asset.assetId, reason: `serial number already on ${hit}` });
+    }
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
 
   asset.ipAddress = normalizeIp(asset.ipAddress);
   asset.macAddress = normalizeMac(asset.macAddress);
@@ -826,6 +877,7 @@ app.post('/assets', (req, res) => {
       return res.status(200).json({ skipped: true, id: asset.assetId });
     }
     db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [asset.assetId]);
+    people.recordChange(asset.assetId, null, asset, { by: req.session?.user?.email || 'scanner', source: req.session?.user ? 'form' : 'scan' });
     logAudit(req, 'asset.created', 'asset', asset.assetId, { assetType: asset.assetType, group: asset.group });
     res.status(201).json({ id: asset.assetId, inserted: true });
   });
@@ -855,14 +907,38 @@ app.post('/assets/check-serials', (req, res) => {
   );
 });
 
-app.post('/assets/bulk', (req, res) => {
+app.post('/assets/bulk', async (req, res) => {
   const list = req.body?.assets;
   if (!Array.isArray(list) || list.length === 0) return res.status(400).json({ error: 'No assets provided' });
   const required = ['assetId', 'group', 'assetType'];
   const badIdx = list.findIndex(a => required.some(f => !a[f] || String(a[f]).trim() === ''));
   if (badIdx >= 0) return res.status(400).json({ error: `Asset at index ${badIdx} missing required fields` });
 
-  const listNorm = list.map(a => {
+  // ManageEngine's last logged-on user ("SWD\a.alkubaesy"), a CSV's typed name: tied to the AD
+  // person when it matches exactly, else kept as typed and listed as not linked. A kind sent with
+  // a row is ignored here: an import never picks a holder, it only brings in what it read.
+  // A row whose real serial number is already in FAS, or earlier in this same import, is the
+  // same device: skipped and named in the answer. INSERT OR IGNORE below only catches a repeated
+  // asset ID, MAC or IP, and a PC that DHCP gave a new IP came in twice.
+  const sameSerial = [];
+  let fresh = list;
+  try {
+    const known = await existingSerialKeys();
+    fresh = [];
+    for (const a of list) {
+      dropPlaceholders(a);
+      delete a.assigneeKind; delete a.assigneeKey;
+      const k = people.serialKey(a.serialNumber);
+      if (k && known.has(k)) { sameSerial.push({ serialNumber: a.serialNumber, existing: known.get(k) }); continue; }
+      if (k) known.set(k, a.assetId);
+      await people.applyAssignee(a);
+      fresh.push(a);
+    }
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+
+  const listNorm = fresh.map(a => {
     const out = {
       ...a,
       ipAddress: normalizeIp(a.ipAddress),
@@ -888,9 +964,9 @@ app.post('/assets/bulk', (req, res) => {
   let i = 0;
   const insertNext = () => {
     if (i >= listNorm.length) {
-      const skipped = listNorm.length - insertedCount;
-      logAudit(req, 'asset.bulk_imported', 'asset', '', { inserted: insertedCount, skipped });
-      return res.json({ inserted: insertedCount, skipped });
+      const skipped = list.length - insertedCount;
+      logAudit(req, 'asset.bulk_imported', 'asset', '', { inserted: insertedCount, skipped, sameSerial: sameSerial.length });
+      return res.json({ inserted: insertedCount, skipped, sameSerial });
     }
     const a = listNorm[i++];
     db.run(sql, BULK_COLUMNS.map(c => a[c] ?? null), function (err) {
@@ -899,6 +975,7 @@ app.post('/assets/bulk', (req, res) => {
       if (this.changes > 0) {
         insertedCount += 1;
         db.run(`INSERT OR IGNORE INTO used_ids (assetId) VALUES (?)`, [a.assetId]);
+        people.recordChange(a.assetId, null, a, { by: req.session?.user?.email || 'scanner', source: 'import' });
       }
       insertNext();
     });
@@ -907,7 +984,7 @@ app.post('/assets/bulk', (req, res) => {
 });
 
 // Update existing — normalization; 409 on MAC/IP collisions
-app.put('/assets/:id', (req, res) => {
+app.put('/assets/:id', async (req, res) => {
   const body = { ...req.body };
 
   // Compose brandModel from brand/model if provided
@@ -925,6 +1002,18 @@ app.put('/assets/:id', (req, res) => {
   if (!asset || Object.keys(asset).length === 0) return res.status(400).json({ error: 'No data provided for update' });
   const missing = requireMinimalFields(asset);
   if (missing.length) return res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` });
+
+  // The holder as it was, so an old typed name that nobody re-picked is kept as it is
+  // while no new typed name can come in.
+  let previous = null;
+  try {
+    previous = await new Promise((resolve, reject) =>
+      db.get(`SELECT assignedTo, assigneeKind, assigneeKey FROM assets WHERE assetId = ?`, [oldId],
+        (e, row) => (e ? reject(e) : resolve(row || null))));
+    await people.applyAssignee(asset, { previous });
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
 
   asset.ipAddress = normalizeIp(asset.ipAddress);
   asset.macAddress = normalizeMac(asset.macAddress);
@@ -951,6 +1040,7 @@ app.put('/assets/:id', (req, res) => {
         db.run(`UPDATE asset_images   SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
         db.run(`UPDATE asset_invoices SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
         db.run(`UPDATE document_assets SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
+        db.run(`UPDATE holder_changes SET assetId = ? WHERE assetId = ?`, [newId, oldId]);
         db.run(`DELETE FROM assets WHERE assetId = ?`, [oldId], function (err) {
           if (err) {
             db.run('ROLLBACK');
@@ -974,6 +1064,7 @@ app.put('/assets/:id', (req, res) => {
               db.run('COMMIT', () => {
                 db.run('PRAGMA foreign_keys = ON');
                 logAudit(req, 'asset.updated', 'asset', newId, { previousId: oldId });
+                people.recordChange(newId, previous, asset, { by: req.session?.user?.email || null, source: 'form' });
                 res.json({ updated: 1 });
               });
             });
@@ -991,6 +1082,7 @@ app.put('/assets/:id', (req, res) => {
         return res.status(status).json({ error: err.message });
       }
       logAudit(req, 'asset.updated', 'asset', oldId, {});
+      if (this.changes) people.recordChange(oldId, previous, asset, { by: req.session?.user?.email || null, source: 'form' });
       res.json({ updated: this.changes });
     });
   }
@@ -1840,6 +1932,9 @@ app.delete('/assets/:assetId/images/:imageId', (req, res) => {
 
 /* ---------------------- Document archive (documents.js) ---------------------- */
 registerDocumentRoutes(app, { db, documentsDir: dataPaths.documentsDir, tessdataDir: TESSDATA_DIR, logAudit });
+
+/* ---------------------- People and places (people.js) ---------------------- */
+people.registerRoutes(app);
 
 /* --------- SPA catch-all: authenticated users navigating directly to a route --- */
 if (fs.existsSync(BUILD_DIR)) {

@@ -24,6 +24,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [exportAssets, setExportAssets] = useState([]);
   const [exportLoading, setExportLoading] = useState(false);
+  const [onlyUnlinked, setOnlyUnlinked] = useState(false); // holder typed by hand, not an AD person or place
 
   const dropdownRef    = useRef();
   const editSectionRef = useRef(null);
@@ -41,7 +42,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
   }, [searchText]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(1); }, [filter]);
+  useEffect(() => { setPage(1); }, [filter, onlyUnlinked]);
 
   const loadAssets = useCallback(async (p) => {
     setLoading(true);
@@ -53,6 +54,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
         group: filter.group,
         assetType: filter.assetType,
         department: filter.department,
+        holder: onlyUnlinked ? 'unlinked' : undefined,
       });
       setAssets(result.items ?? result);
       setTotal(result.total ?? (Array.isArray(result) ? result.length : 0));
@@ -60,7 +62,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
       console.error(err);
     }
     setLoading(false);
-  }, [debouncedSearch, filter]);
+  }, [debouncedSearch, filter, onlyUnlinked]);
 
   useEffect(() => { loadAssets(page); }, [refreshSignal, page, loadAssets]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -154,6 +156,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
   const clearAllFilters = () => {
     setSearchText('');
     setFilter({ group: [], assetType: [], department: [] });
+    setOnlyUnlinked(false);
   };
 
   const startEdit = (asset) => { setEditingAsset(asset); onEditStart && onEditStart(); };
@@ -173,6 +176,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
         group: filter.group,
         assetType: filter.assetType,
         department: filter.department,
+        holder: onlyUnlinked ? 'unlinked' : undefined,
       });
       setExportAssets(Array.isArray(result) ? result : (result.items ?? []));
       setShowExportPanel(true);
@@ -189,6 +193,7 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
   // now, with a way to remove any single one or clear everything at once.
   const hasActiveSearch  = debouncedSearch.trim().length > 0;
   const hasActiveFilters = hasActiveSearch
+    || onlyUnlinked
     || filter.group.length > 0
     || filter.assetType.length > 0
     || filter.department.length > 0;
@@ -200,6 +205,9 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
       label: `Search: "${debouncedSearch}"`,
       onRemove: () => setSearchText(''),
     });
+  }
+  if (onlyUnlinked) {
+    activeChips.push({ key: 'unlinked', label: 'Holder not linked', onRemove: () => setOnlyUnlinked(false) });
   }
   Object.entries(FILTER_FIELDS).forEach(([field, label]) => {
     (filter[field] || []).forEach((value) => {
@@ -228,8 +236,13 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
           placeholder="Search by Asset ID, Serial, Brand, or text in photos…"
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
-          style={{ padding: '6px', width: '300px' }}
+          style={{ padding: '6px', width: '300px', maxWidth: '100%' }}
         />
+        <label style={{ marginLeft: 12, fontSize: 14, whiteSpace: 'nowrap' }}
+          title="Assets whose Assigned To was typed by hand and is not yet an Active Directory person or a place">
+          <input type="checkbox" checked={onlyUnlinked} onChange={(e) => setOnlyUnlinked(e.target.checked)} />{' '}
+          Holder not linked
+        </label>
       </div>
 
       {/* Active search/filter indicator — always visible while filtering */}
@@ -345,7 +358,15 @@ export default function AssetTable({ refreshSignal, onEditStart, onEditEnd, back
                   })()}
                   <td style={tdStyle}>{asset.serialNumber}</td>
                   <td style={tdStyle}>{asset.hostName || '-'}</td>
-                  <td style={tdStyle}>{asset.assignedTo}</td>
+                  <td style={tdStyle}>
+                    {asset.assignedTo}
+                    {asset.assigneeKind === 'text' && (
+                      <span title="Typed by hand, not linked to an AD person or a place. Edit the asset to pick one."
+                        style={{ marginLeft: 6, fontSize: 11, padding: '1px 6px', borderRadius: 8, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' }}>
+                        not linked
+                      </span>
+                    )}
+                  </td>
                   <td style={tdStyle}>{asset.department || '-'}</td>
                   <td style={tdStyle}>
                     <button onClick={() => startEdit(asset)} style={editBtnStyle}>Edit</button>

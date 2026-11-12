@@ -14,6 +14,7 @@ import { categories } from '../data/categories';
 import { API_URL } from '../utils/api';
 import { departments } from '../data/departments';
 import AssetDocuments from './AssetDocuments';
+import AssigneePicker from './AssigneePicker';
 const resolveUrl = (u) => (u && u.startsWith('/') ? `${API_URL}${u}` : u);
 const DEPT_OTHER = 'أخرى'; // unified value for "Other" department
 export default function AssetForm({ onSave, editData }) {
@@ -457,6 +458,7 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
     const isAssetType  = field === 'assetType';
     const isAssetId    = field === 'assetId';
     const isSerial     = field === 'serialNumber';
+    const isAssignee   = field === 'assignedTo';
     const isNumeric    = numericFields.includes(field);
     const label = humanize(field);
 
@@ -516,6 +518,12 @@ const mustHaveDepartmentText = formData.department === DEPT_OTHER;
             <option value="">Select</option>
             {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
+        ) : isAssignee ? (
+          <AssigneePicker
+            value={formData}
+            onChange={(next) => setFormData((prev) => ({ ...prev, ...next }))}
+            inputStyle={inputStyle}
+          />
         ) : isSerial ? (
           <>
             <input

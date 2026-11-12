@@ -18,7 +18,9 @@ NMAP_PATH = os.environ.get("NMAP_PATH") or shutil.which("nmap") or r"C:\Program 
 API_ROOT_DEFAULT = os.environ.get("API_ROOT_DEFAULT", "http://swdapp:4000")
 TARGET_DEFAULT = os.environ.get("TARGET_DEFAULT", "10.27.16.0/24")
 WMI_USERNAME = os.environ.get("WMI_USERNAME", "os-admin")
-WMI_PASSWORD = os.environ.get("WMI_PASSWORD", "Bahrain@2024")
+# From asset-manager-backend\.env only (FAS passes its environment to this script). A password
+# written here was readable by anyone, as this repository is public.
+WMI_PASSWORD = os.environ.get("WMI_PASSWORD", "")
 REQ_TIMEOUT = int(os.environ.get("REQ_TIMEOUT", "8"))
 SCAN_TOKEN = os.environ.get("SCAN_TOKEN")  # used for auth on protected endpoints
 
@@ -281,6 +283,7 @@ def format_for_upload(api_root, info):
         "assetType": assetType,
         "brandModel": f"{info.get('manufacturer')} {info.get('model')}".strip(),
         "serialNumber": info.get("serial_number"),
+        "hostName": info.get("hostname"),
         "assignedTo": info.get("logged_in_user"),
         "ipAddress": norm_ip(info.get("ip")),
         "macAddress": norm_mac(info.get("mac")) if info.get("mac") and info.get("mac") != "Unknown" else "",
@@ -371,6 +374,8 @@ def main():
 
     if not _auth_headers():
         log("WARNING: SCAN_TOKEN not set; protected endpoints may return 401.")
+    if not WMI_PASSWORD:
+        log("WARNING: WMI_PASSWORD not set in asset-manager-backend\\.env; other PCs cannot be read (serial, user, CPU).")
 
     for ip in discover_hosts(target):
         seen += 1
@@ -381,7 +386,18 @@ def main():
 
             if is_duplicate(macs_set, ips_set, mac, ipaddr):
                 skipped += 1
-                log(f"Duplicate: {ip} (skipped)")
+                log(f"Already in FAS: {ip} (not imported)")
+                # Still listed (marked _known, no asset ID) so FAS can compare the user logged on
+                # to it with its holder; FAS never imports a _known row.
+                if args.dry_run:
+                    discovered_payloads.append({
+                        "_known": True,
+                        "hostName": info.get("hostname"),
+                        "serialNumber": info.get("serial_number"),
+                        "macAddress": norm_mac(mac) if mac and mac != "Unknown" else "",
+                        "ipAddress": norm_ip(ipaddr),
+                        "assignedTo": info.get("logged_in_user"),
+                    })
                 continue
 
             payload = format_for_upload(api_root, info)

@@ -8,6 +8,7 @@ import Dashboard from './components/Dashboard';
 import ConsumablesView from './components/ConsumablesView';
 import LabelingView from './components/LabelingView';
 import ArchiveView from './components/ArchiveView';
+import PeopleView from './components/PeopleView';
 import { authMe, login, logout } from './utils/api';
 import './styles/app.css'; // <- all visual styles live here
 
@@ -75,6 +76,7 @@ function App() {
   const goToConsumables = () => setView('consumables');
   const goToLabeling = () => setView('labeling');
   const goToArchive = () => setView('archive');
+  const goToPeople = () => setView('people');
 
   const triggerRefresh = () => {
     setRefresh(Date.now());
@@ -181,29 +183,10 @@ function App() {
               <button className="btn" onClick={() => setScanOpen(true)}>Scan Network</button>
               <button className="btn" onClick={() => setMeOpen(true)}>Import ManageEngine</button>
               <button className="btn" onClick={goToDashboard}>Dashboard</button>
+              <button className="btn" onClick={goToPeople}>People</button>
               <button className="btn" onClick={goToLabeling}>Asset Labeling</button>
-              <button
-                className="btn"
-                onClick={goToConsumables}
-                style={{
-                  background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)',
-                  color: '#fff',
-                  fontWeight: '600'
-                }}
-              >
-                Consumables
-              </button>
-              <button
-                className="btn"
-                onClick={goToArchive}
-                style={{
-                  background: 'linear-gradient(135deg, #0f766e 0%, #14b8a6 100%)',
-                  color: '#fff',
-                  fontWeight: '600'
-                }}
-              >
-                Archive
-              </button>
+              <button className="btn" onClick={goToConsumables}>Consumables</button>
+              <button className="btn" onClick={goToArchive}>Archive</button>
               <button className="btn btn-accent" onClick={goToFormAdd}>Add New Asset</button>
             </div>
           </div>
@@ -256,7 +239,7 @@ function App() {
             <div className="toolbar-right" />
           </div>
 
-          <Dashboard />
+          <Dashboard onOpenPeople={goToPeople} />
         </>
       )}
 
@@ -296,6 +279,18 @@ function App() {
           </div>
 
           <ArchiveView />
+        </>
+      )}
+      {view === 'people' && (
+        <>
+          <div className="toolbar">
+            <div className="toolbar-left">
+              <button className="btn" onClick={goToTable}>← Back to List</button>
+            </div>
+            <div className="toolbar-right" />
+          </div>
+
+          <PeopleView />
         </>
       )}
     </div>
